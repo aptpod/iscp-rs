@@ -1,0 +1,19 @@
+name: Publish to Crate.io
+
+on: [ workflow_dispatch ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+    - uses: ./.github/actions/cache
+    - name: Publish to Crate.io
+      run: |
+        echo "${GITHUB_REF}" | grep "refs/tags"
+        cargo publish

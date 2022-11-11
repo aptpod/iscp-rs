@@ -1,0 +1,912 @@
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct StreamChunk {
+    #[prost(uint32, tag="1")]
+    pub sequence_number: u32,
+    #[prost(message, repeated, tag="2")]
+    pub data_point_groups: ::prost::alloc::vec::Vec<DataPointGroup>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DataPointGroup {
+    #[prost(message, repeated, tag="3")]
+    pub data_points: ::prost::alloc::vec::Vec<DataPoint>,
+    #[prost(oneof="data_point_group::DataIdOrAlias", tags="1, 2")]
+    pub data_id_or_alias: ::core::option::Option<data_point_group::DataIdOrAlias>,
+}
+/// Nested message and enum types in `DataPointGroup`.
+pub mod data_point_group {
+    #[derive(serde::Serialize, serde::Deserialize)]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum DataIdOrAlias {
+        #[prost(message, tag="1")]
+        DataId(super::DataId),
+        #[prost(uint32, tag="2")]
+        DataIdAlias(u32),
+    }
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DataPoint {
+    #[prost(sint64, tag="1")]
+    pub elapsed_time: i64,
+    #[prost(bytes="vec", tag="2")]
+    pub payload: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(PartialOrd, Ord, Eq, Hash)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DataId {
+    #[prost(string, tag="1")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(string, tag="2")]
+    pub r#type: ::prost::alloc::string::String,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DownstreamFilter {
+    #[prost(string, tag="1")]
+    pub source_node_id: ::prost::alloc::string::String,
+    #[prost(message, repeated, tag="2")]
+    pub data_filters: ::prost::alloc::vec::Vec<DataFilter>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(PartialOrd, Ord, Eq, Hash)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DataFilter {
+    #[prost(string, tag="1")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(string, tag="2")]
+    pub r#type: ::prost::alloc::string::String,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(num_derive::FromPrimitive, num_derive::ToPrimitive)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum QoS {
+    Unreliable = 0,
+    Reliable = 1,
+    Partial = 2,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(num_derive::FromPrimitive, num_derive::ToPrimitive)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ResultCode {
+    Succeeded = 0,
+    IncompatibleVersion = 1,
+    MaximumDataIdAlias = 2,
+    MaximumUpstreamAlias = 3,
+    UnspecifiedError = 64,
+    NoNodeId = 65,
+    AuthFailed = 66,
+    ConnectTimeout = 67,
+    MalformedMessage = 68,
+    ProtocolError = 69,
+    AckTimeout = 70,
+    InvalidPayload = 71,
+    InvalidDataId = 72,
+    InvalidDataIdAlias = 73,
+    InvalidDataFilter = 74,
+    StreamNotFound = 75,
+    ResumeRequestConflict = 76,
+    ProcessFailed = 77,
+    DesiredQosNotSupported = 78,
+    PingTimeout = 79,
+    TooLargeMessageSize = 80,
+    TooManyDataIdAliases = 81,
+    TooManyStreams = 82,
+    TooLongAckInterval = 83,
+    TooManyDownstreamFilters = 84,
+    TooManyDataFilters = 85,
+    TooLongExpiryInterval = 86,
+    TooLongPingTimeout = 87,
+    TooShortPingInterval = 88,
+    TooShortPingTimeout = 89,
+    RateLimitReached = 90,
+    NodeIdMismatch = 128,
+    SessionNotFound = 129,
+    SessionAlreadyClosed = 130,
+    SessionCannotClosed = 131,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ConnectRequestExtensionFields {
+    #[prost(string, tag="1")]
+    pub access_token: ::prost::alloc::string::String,
+    #[prost(message, optional, tag="1024")]
+    pub intdash: ::core::option::Option<IntdashExtensionFields>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct IntdashExtensionFields {
+    #[prost(string, tag="1")]
+    pub project_uuid: ::prost::alloc::string::String,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ConnectResponseExtensionFields {
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DisconnectExtensionFields {
+}
+//
+// iSCP Messages
+//
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ConnectRequest {
+    #[prost(uint32, tag="1")]
+    pub request_id: u32,
+    #[prost(string, tag="2")]
+    pub protocol_version: ::prost::alloc::string::String,
+    #[prost(string, tag="3")]
+    pub node_id: ::prost::alloc::string::String,
+    #[prost(uint32, tag="4")]
+    pub ping_interval: u32,
+    #[prost(uint32, tag="5")]
+    pub ping_timeout: u32,
+    #[prost(message, optional, tag="6")]
+    pub extension_fields: ::core::option::Option<ConnectRequestExtensionFields>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ConnectResponse {
+    #[prost(uint32, tag="1")]
+    pub request_id: u32,
+    #[prost(string, tag="2")]
+    pub protocol_version: ::prost::alloc::string::String,
+    #[prost(enumeration="ResultCode", tag="3")]
+    pub result_code: i32,
+    #[prost(string, tag="4")]
+    pub result_string: ::prost::alloc::string::String,
+    #[prost(message, optional, tag="5")]
+    pub extension_fields: ::core::option::Option<ConnectResponseExtensionFields>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Disconnect {
+    #[prost(enumeration="ResultCode", tag="1")]
+    pub result_code: i32,
+    #[prost(string, tag="2")]
+    pub result_string: ::prost::alloc::string::String,
+    #[prost(message, optional, tag="3")]
+    pub extension_fields: ::core::option::Option<DisconnectExtensionFields>,
+}
+//
+// Metadata
+//
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct BaseTime {
+    #[prost(string, tag="1")]
+    pub session_id: ::prost::alloc::string::String,
+    #[prost(string, tag="2")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(uint32, tag="3")]
+    pub priority: u32,
+    #[prost(uint64, tag="4")]
+    pub elapsed_time: u64,
+    #[prost(sint64, tag="5")]
+    pub base_time: i64,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UpstreamOpen {
+    #[prost(bytes="vec", tag="1")]
+    pub stream_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag="2")]
+    pub session_id: ::prost::alloc::string::String,
+    #[prost(enumeration="QoS", tag="3")]
+    pub qos: i32,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UpstreamAbnormalClose {
+    #[prost(bytes="vec", tag="1")]
+    pub stream_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag="2")]
+    pub session_id: ::prost::alloc::string::String,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UpstreamResume {
+    #[prost(bytes="vec", tag="1")]
+    pub stream_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag="2")]
+    pub session_id: ::prost::alloc::string::String,
+    #[prost(enumeration="QoS", tag="3")]
+    pub qos: i32,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UpstreamNormalClose {
+    #[prost(bytes="vec", tag="1")]
+    pub stream_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag="2")]
+    pub session_id: ::prost::alloc::string::String,
+    #[prost(uint64, tag="3")]
+    pub total_data_points: u64,
+    #[prost(uint32, tag="4")]
+    pub final_sequence_number: u32,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DownstreamOpen {
+    #[prost(bytes="vec", tag="1")]
+    pub stream_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, repeated, tag="2")]
+    pub downstream_filters: ::prost::alloc::vec::Vec<DownstreamFilter>,
+    #[prost(enumeration="QoS", tag="3")]
+    pub qos: i32,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DownstreamAbnormalClose {
+    #[prost(bytes="vec", tag="1")]
+    pub stream_id: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DownstreamResume {
+    #[prost(bytes="vec", tag="1")]
+    pub stream_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, repeated, tag="2")]
+    pub downstream_filters: ::prost::alloc::vec::Vec<DownstreamFilter>,
+    #[prost(enumeration="QoS", tag="3")]
+    pub qos: i32,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DownstreamNormalClose {
+    #[prost(bytes="vec", tag="1")]
+    pub stream_id: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DownstreamOpenRequestExtensionFields {
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DownstreamOpenResponseExtensionFields {
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DownstreamResumeRequestExtensionFields {
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DownstreamResumeResponseExtensionFields {
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DownstreamCloseRequestExtensionFields {
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DownstreamCloseResponseExtensionFields {
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DownstreamChunkExtensionFields {
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DownstreamChunkAckExtensionFields {
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DownstreamChunkAckCompleteExtensionFields {
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DownstreamMetadataExtensionFields {
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DownstreamMetadataAckExtensionFields {
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DownstreamChunkResultExtensionFields {
+}
+//
+// iSCP Messages
+//
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DownstreamOpenRequest {
+    #[prost(uint32, tag="1")]
+    pub request_id: u32,
+    #[prost(uint32, tag="2")]
+    pub desired_stream_id_alias: u32,
+    #[prost(message, repeated, tag="3")]
+    pub downstream_filters: ::prost::alloc::vec::Vec<DownstreamFilter>,
+    #[prost(uint32, tag="4")]
+    pub expiry_interval: u32,
+    #[prost(map="uint32, message", tag="5")]
+    pub data_id_aliases: ::std::collections::HashMap<u32, DataId>,
+    #[prost(enumeration="QoS", tag="6")]
+    pub qos: i32,
+    #[prost(message, optional, tag="7")]
+    pub extension_fields: ::core::option::Option<DownstreamOpenRequestExtensionFields>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DownstreamOpenResponse {
+    #[prost(uint32, tag="1")]
+    pub request_id: u32,
+    #[prost(bytes="vec", tag="2")]
+    pub assigned_stream_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(sint64, tag="3")]
+    pub server_time: i64,
+    #[prost(enumeration="ResultCode", tag="4")]
+    pub result_code: i32,
+    #[prost(string, tag="5")]
+    pub result_string: ::prost::alloc::string::String,
+    #[prost(message, optional, tag="6")]
+    pub extension_fields: ::core::option::Option<DownstreamOpenResponseExtensionFields>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DownstreamResumeRequest {
+    #[prost(uint32, tag="1")]
+    pub request_id: u32,
+    #[prost(bytes="vec", tag="2")]
+    pub stream_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint32, tag="3")]
+    pub desired_stream_id_alias: u32,
+    #[prost(message, optional, tag="4")]
+    pub extension_fields: ::core::option::Option<DownstreamResumeRequestExtensionFields>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DownstreamResumeResponse {
+    #[prost(uint32, tag="1")]
+    pub request_id: u32,
+    #[prost(enumeration="ResultCode", tag="2")]
+    pub result_code: i32,
+    #[prost(string, tag="3")]
+    pub result_string: ::prost::alloc::string::String,
+    #[prost(message, optional, tag="4")]
+    pub extension_fields: ::core::option::Option<DownstreamResumeResponseExtensionFields>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DownstreamCloseRequest {
+    #[prost(uint32, tag="1")]
+    pub request_id: u32,
+    #[prost(bytes="vec", tag="2")]
+    pub stream_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag="3")]
+    pub extension_fields: ::core::option::Option<DownstreamCloseRequestExtensionFields>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DownstreamCloseResponse {
+    #[prost(uint32, tag="1")]
+    pub request_id: u32,
+    #[prost(enumeration="ResultCode", tag="2")]
+    pub result_code: i32,
+    #[prost(string, tag="3")]
+    pub result_string: ::prost::alloc::string::String,
+    #[prost(message, optional, tag="4")]
+    pub extension_fields: ::core::option::Option<DownstreamCloseResponseExtensionFields>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DownstreamChunk {
+    #[prost(uint32, tag="1")]
+    pub stream_id_alias: u32,
+    #[prost(message, optional, tag="4")]
+    pub stream_chunk: ::core::option::Option<StreamChunk>,
+    #[prost(message, optional, tag="5")]
+    pub extension_fields: ::core::option::Option<DownstreamChunkExtensionFields>,
+    #[prost(oneof="downstream_chunk::UpstreamOrAlias", tags="2, 3")]
+    pub upstream_or_alias: ::core::option::Option<downstream_chunk::UpstreamOrAlias>,
+}
+/// Nested message and enum types in `DownstreamChunk`.
+pub mod downstream_chunk {
+    #[derive(serde::Serialize, serde::Deserialize)]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum UpstreamOrAlias {
+        #[prost(message, tag="2")]
+        UpstreamInfo(super::UpstreamInfo),
+        #[prost(uint32, tag="3")]
+        UpstreamAlias(u32),
+    }
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DownstreamChunkAck {
+    #[prost(uint32, tag="1")]
+    pub stream_id_alias: u32,
+    #[prost(uint32, tag="2")]
+    pub ack_id: u32,
+    #[prost(message, repeated, tag="3")]
+    pub results: ::prost::alloc::vec::Vec<DownstreamChunkResult>,
+    #[prost(map="uint32, message", tag="4")]
+    pub upstream_aliases: ::std::collections::HashMap<u32, UpstreamInfo>,
+    #[prost(map="uint32, message", tag="5")]
+    pub data_id_aliases: ::std::collections::HashMap<u32, DataId>,
+    #[prost(message, optional, tag="6")]
+    pub extension_fields: ::core::option::Option<DownstreamChunkAckExtensionFields>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DownstreamChunkAckComplete {
+    #[prost(uint32, tag="1")]
+    pub stream_id_alias: u32,
+    #[prost(uint32, tag="2")]
+    pub ack_id: u32,
+    #[prost(enumeration="ResultCode", tag="3")]
+    pub result_code: i32,
+    #[prost(string, tag="4")]
+    pub result_string: ::prost::alloc::string::String,
+    #[prost(message, optional, tag="5")]
+    pub extension_fields: ::core::option::Option<DownstreamChunkAckCompleteExtensionFields>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DownstreamMetadata {
+    #[prost(uint32, tag="1")]
+    pub request_id: u32,
+    #[prost(uint32, tag="13")]
+    pub stream_id_alias: u32,
+    #[prost(string, tag="11")]
+    pub source_node_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag="12")]
+    pub extension_fields: ::core::option::Option<DownstreamMetadataExtensionFields>,
+    #[prost(oneof="downstream_metadata::Metadata", tags="2, 3, 4, 5, 6, 7, 8, 9, 10")]
+    pub metadata: ::core::option::Option<downstream_metadata::Metadata>,
+}
+/// Nested message and enum types in `DownstreamMetadata`.
+pub mod downstream_metadata {
+    #[derive(serde::Serialize, serde::Deserialize)]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Metadata {
+        #[prost(message, tag="2")]
+        BaseTime(super::BaseTime),
+        #[prost(message, tag="3")]
+        UpstreamOpen(super::UpstreamOpen),
+        #[prost(message, tag="4")]
+        UpstreamAbnormalClose(super::UpstreamAbnormalClose),
+        #[prost(message, tag="5")]
+        UpstreamResume(super::UpstreamResume),
+        #[prost(message, tag="6")]
+        UpstreamNormalClose(super::UpstreamNormalClose),
+        #[prost(message, tag="7")]
+        DownstreamOpen(super::DownstreamOpen),
+        #[prost(message, tag="8")]
+        DownstreamAbnormalClose(super::DownstreamAbnormalClose),
+        #[prost(message, tag="9")]
+        DownstreamResume(super::DownstreamResume),
+        #[prost(message, tag="10")]
+        DownstreamNormalClose(super::DownstreamNormalClose),
+    }
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DownstreamMetadataAck {
+    #[prost(uint32, tag="1")]
+    pub request_id: u32,
+    #[prost(enumeration="ResultCode", tag="2")]
+    pub result_code: i32,
+    #[prost(string, tag="3")]
+    pub result_string: ::prost::alloc::string::String,
+    #[prost(message, optional, tag="4")]
+    pub extension_fields: ::core::option::Option<DownstreamMetadataAckExtensionFields>,
+}
+//
+// Internals
+//
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UpstreamInfo {
+    #[prost(string, tag="1")]
+    pub session_id: ::prost::alloc::string::String,
+    #[prost(bytes="vec", tag="2")]
+    pub stream_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag="3")]
+    pub source_node_id: ::prost::alloc::string::String,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DownstreamChunkResult {
+    #[prost(bytes="vec", tag="1")]
+    pub stream_id_of_upstream: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint32, tag="2")]
+    pub sequence_number_in_upstream: u32,
+    #[prost(enumeration="ResultCode", tag="3")]
+    pub result_code: i32,
+    #[prost(string, tag="4")]
+    pub result_string: ::prost::alloc::string::String,
+    #[prost(message, optional, tag="5")]
+    pub extension_fields: ::core::option::Option<DownstreamChunkResultExtensionFields>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UpstreamCallExtensionFields {
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UpstreamCallAckExtensionFields {
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DownstreamCallExtensionFields {
+}
+//
+// iSCP Messages
+//
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UpstreamCall {
+    #[prost(string, tag="1")]
+    pub call_id: ::prost::alloc::string::String,
+    #[prost(string, tag="2")]
+    pub request_call_id: ::prost::alloc::string::String,
+    #[prost(string, tag="3")]
+    pub destination_node_id: ::prost::alloc::string::String,
+    #[prost(string, tag="4")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(string, tag="5")]
+    pub r#type: ::prost::alloc::string::String,
+    #[prost(bytes="vec", tag="6")]
+    pub payload: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag="7")]
+    pub extension_fields: ::core::option::Option<UpstreamCallExtensionFields>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UpstreamCallAck {
+    #[prost(string, tag="1")]
+    pub call_id: ::prost::alloc::string::String,
+    #[prost(enumeration="ResultCode", tag="2")]
+    pub result_code: i32,
+    #[prost(string, tag="3")]
+    pub result_string: ::prost::alloc::string::String,
+    #[prost(message, optional, tag="4")]
+    pub extension_fields: ::core::option::Option<UpstreamCallAckExtensionFields>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DownstreamCall {
+    #[prost(string, tag="1")]
+    pub call_id: ::prost::alloc::string::String,
+    #[prost(string, tag="2")]
+    pub request_call_id: ::prost::alloc::string::String,
+    #[prost(string, tag="3")]
+    pub source_node_id: ::prost::alloc::string::String,
+    #[prost(string, tag="4")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(string, tag="5")]
+    pub r#type: ::prost::alloc::string::String,
+    #[prost(bytes="vec", tag="6")]
+    pub payload: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag="7")]
+    pub extension_fields: ::core::option::Option<DownstreamCallExtensionFields>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PingExtensionFields {
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PongExtensionFields {
+}
+//
+// iSCP Messages
+//
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Ping {
+    #[prost(uint32, tag="1")]
+    pub request_id: u32,
+    #[prost(message, optional, tag="2")]
+    pub extension_fields: ::core::option::Option<PingExtensionFields>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Pong {
+    #[prost(uint32, tag="1")]
+    pub request_id: u32,
+    #[prost(message, optional, tag="2")]
+    pub extension_fields: ::core::option::Option<PongExtensionFields>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UpstreamOpenRequestExtensionFields {
+    #[prost(bool, tag="1")]
+    pub persist: bool,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UpstreamOpenResponseExtensionFields {
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UpstreamResumeRequestExtensionFields {
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UpstreamResumeResponseExtensionFields {
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UpstreamCloseRequestExtensionFields {
+    #[prost(bool, tag="1")]
+    pub close_session: bool,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UpstreamCloseResponseExtensionFields {
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UpstreamChunkExtensionFields {
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UpstreamChunkAckExtensionFields {
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UpstreamMetadataExtensionFields {
+    #[prost(bool, tag="1")]
+    pub persist: bool,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UpstreamMetadataAckExtensionFields {
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UpstreamChunkResultExtensionFields {
+}
+//
+// iSCP Messages
+//
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UpstreamOpenRequest {
+    #[prost(uint32, tag="1")]
+    pub request_id: u32,
+    #[prost(string, tag="2")]
+    pub session_id: ::prost::alloc::string::String,
+    #[prost(uint32, tag="3")]
+    pub ack_interval: u32,
+    #[prost(uint32, tag="5")]
+    pub expiry_interval: u32,
+    #[prost(message, repeated, tag="6")]
+    pub data_ids: ::prost::alloc::vec::Vec<DataId>,
+    #[prost(enumeration="QoS", tag="7")]
+    pub qos: i32,
+    #[prost(message, optional, tag="8")]
+    pub extension_fields: ::core::option::Option<UpstreamOpenRequestExtensionFields>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UpstreamOpenResponse {
+    #[prost(uint32, tag="1")]
+    pub request_id: u32,
+    #[prost(bytes="vec", tag="2")]
+    pub assigned_stream_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint32, tag="3")]
+    pub assigned_stream_id_alias: u32,
+    #[prost(map="uint32, message", tag="4")]
+    pub data_id_aliases: ::std::collections::HashMap<u32, DataId>,
+    #[prost(sint64, tag="5")]
+    pub server_time: i64,
+    #[prost(enumeration="ResultCode", tag="6")]
+    pub result_code: i32,
+    #[prost(string, tag="7")]
+    pub result_string: ::prost::alloc::string::String,
+    #[prost(message, optional, tag="8")]
+    pub extension_fields: ::core::option::Option<UpstreamOpenResponseExtensionFields>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UpstreamResumeRequest {
+    #[prost(uint32, tag="1")]
+    pub request_id: u32,
+    #[prost(bytes="vec", tag="2")]
+    pub stream_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag="3")]
+    pub extension_fields: ::core::option::Option<UpstreamResumeRequestExtensionFields>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UpstreamResumeResponse {
+    #[prost(uint32, tag="1")]
+    pub request_id: u32,
+    #[prost(uint32, tag="2")]
+    pub assigned_stream_id_alias: u32,
+    #[prost(enumeration="ResultCode", tag="3")]
+    pub result_code: i32,
+    #[prost(string, tag="4")]
+    pub result_string: ::prost::alloc::string::String,
+    #[prost(message, optional, tag="5")]
+    pub extension_fields: ::core::option::Option<UpstreamResumeResponseExtensionFields>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UpstreamCloseRequest {
+    #[prost(uint32, tag="1")]
+    pub request_id: u32,
+    #[prost(bytes="vec", tag="2")]
+    pub stream_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag="3")]
+    pub total_data_points: u64,
+    #[prost(uint32, tag="4")]
+    pub final_sequence_number: u32,
+    #[prost(message, optional, tag="5")]
+    pub extension_fields: ::core::option::Option<UpstreamCloseRequestExtensionFields>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UpstreamCloseResponse {
+    #[prost(uint32, tag="1")]
+    pub request_id: u32,
+    #[prost(enumeration="ResultCode", tag="2")]
+    pub result_code: i32,
+    #[prost(string, tag="3")]
+    pub result_string: ::prost::alloc::string::String,
+    #[prost(message, optional, tag="4")]
+    pub extension_fields: ::core::option::Option<UpstreamCloseResponseExtensionFields>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UpstreamChunk {
+    #[prost(uint32, tag="1")]
+    pub stream_id_alias: u32,
+    #[prost(message, optional, tag="2")]
+    pub stream_chunk: ::core::option::Option<StreamChunk>,
+    #[prost(message, repeated, tag="3")]
+    pub data_ids: ::prost::alloc::vec::Vec<DataId>,
+    #[prost(message, optional, tag="4")]
+    pub extension_fields: ::core::option::Option<UpstreamChunkExtensionFields>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UpstreamChunkAck {
+    #[prost(uint32, tag="1")]
+    pub stream_id_alias: u32,
+    #[prost(message, repeated, tag="2")]
+    pub results: ::prost::alloc::vec::Vec<UpstreamChunkResult>,
+    #[prost(map="uint32, message", tag="3")]
+    pub data_id_aliases: ::std::collections::HashMap<u32, DataId>,
+    #[prost(message, optional, tag="4")]
+    pub extension_fields: ::core::option::Option<UpstreamChunkAckExtensionFields>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UpstreamMetadata {
+    #[prost(uint32, tag="1")]
+    pub request_id: u32,
+    #[prost(message, optional, tag="4")]
+    pub extension_fields: ::core::option::Option<UpstreamMetadataExtensionFields>,
+    #[prost(oneof="upstream_metadata::Metadata", tags="2")]
+    pub metadata: ::core::option::Option<upstream_metadata::Metadata>,
+}
+/// Nested message and enum types in `UpstreamMetadata`.
+pub mod upstream_metadata {
+    #[derive(serde::Serialize, serde::Deserialize)]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Metadata {
+        #[prost(message, tag="2")]
+        BaseTime(super::BaseTime),
+    }
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UpstreamMetadataAck {
+    #[prost(uint32, tag="1")]
+    pub request_id: u32,
+    #[prost(enumeration="ResultCode", tag="2")]
+    pub result_code: i32,
+    #[prost(string, tag="3")]
+    pub result_string: ::prost::alloc::string::String,
+    #[prost(message, optional, tag="4")]
+    pub extension_fields: ::core::option::Option<UpstreamMetadataAckExtensionFields>,
+}
+//
+// Internals
+//
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UpstreamChunkResult {
+    #[prost(uint32, tag="1")]
+    pub sequence_number: u32,
+    #[prost(enumeration="ResultCode", tag="2")]
+    pub result_code: i32,
+    #[prost(string, tag="3")]
+    pub result_string: ::prost::alloc::string::String,
+    #[prost(message, optional, tag="4")]
+    pub extension_fields: ::core::option::Option<UpstreamChunkResultExtensionFields>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Message {
+    #[prost(oneof="message::Message", tags="1, 2, 3, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 192, 193, 256, 257, 258")]
+    pub message: ::core::option::Option<message::Message>,
+}
+/// Nested message and enum types in `Message`.
+pub mod message {
+    #[derive(serde::Serialize, serde::Deserialize)]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Message {
+        /// Connect
+        #[prost(message, tag="1")]
+        ConnectRequest(super::ConnectRequest),
+        #[prost(message, tag="2")]
+        ConnectResponse(super::ConnectResponse),
+        #[prost(message, tag="3")]
+        Disconnect(super::Disconnect),
+        /// Upstream
+        #[prost(message, tag="64")]
+        UpstreamOpenRequest(super::UpstreamOpenRequest),
+        #[prost(message, tag="65")]
+        UpstreamOpenResponse(super::UpstreamOpenResponse),
+        #[prost(message, tag="66")]
+        UpstreamResumeRequest(super::UpstreamResumeRequest),
+        #[prost(message, tag="67")]
+        UpstreamResumeResponse(super::UpstreamResumeResponse),
+        #[prost(message, tag="68")]
+        UpstreamCloseRequest(super::UpstreamCloseRequest),
+        #[prost(message, tag="69")]
+        UpstreamCloseResponse(super::UpstreamCloseResponse),
+        #[prost(message, tag="70")]
+        UpstreamChunk(super::UpstreamChunk),
+        #[prost(message, tag="71")]
+        UpstreamChunkAck(super::UpstreamChunkAck),
+        #[prost(message, tag="72")]
+        UpstreamMetadata(super::UpstreamMetadata),
+        #[prost(message, tag="73")]
+        UpstreamMetadataAck(super::UpstreamMetadataAck),
+        /// Downstream
+        #[prost(message, tag="128")]
+        DownstreamOpenRequest(super::DownstreamOpenRequest),
+        #[prost(message, tag="129")]
+        DownstreamOpenResponse(super::DownstreamOpenResponse),
+        #[prost(message, tag="130")]
+        DownstreamResumeRequest(super::DownstreamResumeRequest),
+        #[prost(message, tag="131")]
+        DownstreamResumeResponse(super::DownstreamResumeResponse),
+        #[prost(message, tag="132")]
+        DownstreamCloseRequest(super::DownstreamCloseRequest),
+        #[prost(message, tag="133")]
+        DownstreamCloseResponse(super::DownstreamCloseResponse),
+        #[prost(message, tag="134")]
+        DownstreamChunk(super::DownstreamChunk),
+        #[prost(message, tag="135")]
+        DownstreamChunkAck(super::DownstreamChunkAck),
+        #[prost(message, tag="136")]
+        DownstreamChunkAckComplete(super::DownstreamChunkAckComplete),
+        #[prost(message, tag="137")]
+        DownstreamMetadata(super::DownstreamMetadata),
+        #[prost(message, tag="138")]
+        DownstreamMetadataAck(super::DownstreamMetadataAck),
+        /// Ping/Pong
+        #[prost(message, tag="192")]
+        Ping(super::Ping),
+        #[prost(message, tag="193")]
+        Pong(super::Pong),
+        /// E2E Call
+        #[prost(message, tag="256")]
+        UpstreamCall(super::UpstreamCall),
+        #[prost(message, tag="257")]
+        UpstreamCallAck(super::UpstreamCallAck),
+        #[prost(message, tag="258")]
+        DownstreamCall(super::DownstreamCall),
+    }
+}
