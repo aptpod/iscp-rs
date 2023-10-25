@@ -16,4 +16,4 @@ jobs:
     - name: Publish to Crate.io
       run: |
         echo "${GITHUB_REF}" | grep "refs/tags"
-        cargo publish
+        cargo publish --token ${{ secrets.CRATES_IO }}

@@ -1,3 +1,5 @@
+use bytes::Bytes;
+
 /// アップストリームコールです。
 #[derive(Clone, PartialEq, Default, Debug)]
 pub struct UpstreamCall {
@@ -10,9 +12,9 @@ pub struct UpstreamCall {
     /// 名称
     pub name: String,
     /// 型
-    pub f_type: String,
+    pub type_: String,
     /// ペイロード
-    pub payload: Vec<u8>,
+    pub payload: Bytes,
 }
 
 /// アップストリームコールに対する応答です。
@@ -38,9 +40,9 @@ pub struct DownstreamCall {
     /// 名称
     pub name: String,
     /// 型
-    pub f_type: String,
+    pub type_: String,
     /// ペイロード
-    pub payload: Vec<u8>,
+    pub payload: Bytes,
 }
 
 impl DownstreamCall {

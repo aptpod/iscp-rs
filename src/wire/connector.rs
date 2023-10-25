@@ -4,15 +4,23 @@ use crate::{enc, tr, Result};
 use async_trait::async_trait;
 use log::info;
 
-#[derive(Clone, Debug)]
 struct Connector {
-    tr_connector: tr::Connector,
-    encoding: enc::Encoding,
+    tr_connector: tr::BoxedConnector,
+    encoding: enc::EncodingKind,
+}
+
+impl std::fmt::Debug for Connector {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Connector")
+            .field("tr_connector", &"BoxedConnector")
+            .field("encoding", &self.encoding)
+            .finish()
+    }
 }
 
 pub fn new_connector(
-    tr_connector: tr::Connector,
-    encoding: enc::Encoding,
+    tr_connector: tr::BoxedConnector,
+    encoding: enc::EncodingKind,
 ) -> impl super::Connector {
     Connector {
         tr_connector,

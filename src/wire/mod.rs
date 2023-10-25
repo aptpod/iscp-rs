@@ -70,8 +70,8 @@ mock! {
 }
 
 #[derive(Debug)]
-pub struct CloseNotificationReceiver(broadcast::Receiver<()>);
-impl CloseNotificationReceiver {
+pub struct DisconnectNotificationReceiver(broadcast::Receiver<()>);
+impl DisconnectNotificationReceiver {
     pub async fn recv(&mut self) {
         let _ = self.0.recv().await; // ignore error
     }
@@ -83,7 +83,7 @@ impl CloseNotificationReceiver {
 #[cfg_attr(test, automock)]
 #[async_trait]
 pub trait Connection: Send + Sync {
-    fn subscribe_close_notify(&self) -> CloseNotificationReceiver;
+    fn subscribe_disconnect_notify(&self) -> DisconnectNotificationReceiver;
     async fn close(&self) -> Result<()>;
     async fn open_request(&self, msg: msg::ConnectRequest) -> Result<msg::ConnectResponse>;
     async fn disconnect(&self, msg: msg::Disconnect) -> Result<()>;
@@ -147,7 +147,7 @@ mock! {
     pub MockConnection{}
     #[async_trait]
     impl Connection for MockConnection {
-        fn subscribe_close_notify(&self) -> CloseNotificationReceiver;
+        fn subscribe_disconnect_notify(&self) -> DisconnectNotificationReceiver;
         async fn close(&self) -> Result<()>;
         async fn open_request(
             &self,
@@ -212,8 +212,8 @@ pub type BoxedConnection = Box<dyn Connection>;
 
 #[async_trait]
 impl<C: Connection + ?Sized> Connection for Box<C> {
-    fn subscribe_close_notify(&self) -> CloseNotificationReceiver {
-        (**self).subscribe_close_notify()
+    fn subscribe_disconnect_notify(&self) -> DisconnectNotificationReceiver {
+        (**self).subscribe_disconnect_notify()
     }
     async fn close(&self) -> Result<()> {
         (**self).close().await

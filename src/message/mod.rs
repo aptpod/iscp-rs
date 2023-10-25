@@ -1,5 +1,7 @@
 //! iSCPのメッセージ構造体を格納したモジュールです。
 
+#![allow(clippy::derive_partial_eq_without_eq)]
+
 mod connect;
 mod data;
 mod downstream;
@@ -54,17 +56,17 @@ impl From<u32> for RequestId {
 pub use crate::encoding::internal::autogen::DataId;
 
 impl DataId {
-    pub fn new<T1: Into<String>, T2: Into<String>>(name: T1, f_type: T2) -> Self {
+    pub fn new<T1: Into<String>, T2: Into<String>>(name: T1, type_: T2) -> Self {
         Self {
             name: name.into(),
-            r#type: f_type.into(),
+            type_: type_.into(),
         }
     }
 
     pub fn validate(&self) -> Result<()> {
         let list = ["#", "+", ":"];
         for c in list.iter() {
-            if self.name.contains(c) || self.r#type.contains(c) {
+            if self.name.contains(c) || self.type_.contains(c) {
                 return Err(Error::invalid_value(format!("cannot use {:?}", list)));
             }
         }
@@ -78,12 +80,10 @@ impl DataId {
             return Err(Error::invalid_value("splitter ':' not found"));
         }
         let id = Self {
-            r#type: split[0].to_string(),
+            type_: split[0].to_string(),
             name: split[1].to_string(),
         };
-        if let Err(err) = id.validate() {
-            return Err(err);
-        }
+        id.validate()?;
         Ok(id)
     }
 }
@@ -97,7 +97,7 @@ impl std::str::FromStr for DataId {
 
 impl std::fmt::Display for DataId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}", self.r#type, self.name)
+        write!(f, "{}:{}", self.type_, self.name)
     }
 }
 

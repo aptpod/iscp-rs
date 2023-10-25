@@ -13,6 +13,7 @@ impl From<msg::DownstreamOpenRequest> for DownstreamOpenRequest {
             expiry_interval: req.expiry_interval.num_seconds() as u32,
             data_id_aliases: req.data_id_aliases,
             qos: req.qos.into(),
+            omit_empty_chunk: req.omit_empty_chunk,
             ..Default::default()
         }
     }
@@ -27,6 +28,7 @@ impl From<DownstreamOpenRequest> for msg::DownstreamOpenRequest {
             expiry_interval: chrono::Duration::seconds(req.expiry_interval as i64),
             data_id_aliases: req.data_id_aliases,
             qos: req.qos.into(),
+            omit_empty_chunk: req.omit_empty_chunk,
         }
     }
 }
@@ -41,8 +43,11 @@ impl From<msg::DownstreamOpenResponse> for DownstreamOpenResponse {
     fn from(r: msg::DownstreamOpenResponse) -> Self {
         Self {
             request_id: r.request_id.value(),
-            assigned_stream_id: r.assigned_stream_id.as_bytes().to_vec(),
-            server_time: r.server_time.timestamp_nanos(),
+            assigned_stream_id: r.assigned_stream_id.as_bytes().to_vec().into(),
+            server_time: r.server_time.timestamp_nanos_opt().unwrap_or_else(|| {
+                log::warn!("server time overflow");
+                Default::default()
+            }),
             result_code: r.result_code.into(),
             result_string: r.result_string,
             ..Default::default()
@@ -57,11 +62,15 @@ impl From<DownstreamOpenResponse> for msg::DownstreamOpenResponse {
             assigned_stream_id: uuid::Builder::from_slice(&r.assigned_stream_id)
                 .unwrap_or_else(|_| uuid::Builder::nil())
                 .into_uuid(),
-            server_time: chrono::DateTime::from_utc(
-                chrono::NaiveDateTime::from_timestamp(
+            server_time: chrono::DateTime::from_naive_utc_and_offset(
+                chrono::NaiveDateTime::from_timestamp_opt(
                     r.server_time / 1000000000,
                     (r.server_time % 1000000000) as u32,
-                ),
+                )
+                .unwrap_or_else(|| {
+                    log::warn!("server time overflow");
+                    Default::default()
+                }),
                 chrono::Utc,
             ),
             result_code: r.result_code.into(),
@@ -80,7 +89,7 @@ impl From<msg::DownstreamResumeRequest> for DownstreamResumeRequest {
     fn from(r: msg::DownstreamResumeRequest) -> Self {
         Self {
             request_id: r.request_id.value(),
-            stream_id: r.stream_id.as_bytes().to_vec(),
+            stream_id: r.stream_id.as_bytes().to_vec().into(),
             desired_stream_id_alias: r.desired_stream_id_alias,
             ..Default::default()
         }
@@ -136,7 +145,7 @@ impl From<msg::DownstreamCloseRequest> for DownstreamCloseRequest {
     fn from(r: msg::DownstreamCloseRequest) -> Self {
         Self {
             request_id: r.request_id.value(),
-            stream_id: r.stream_id.as_bytes().to_vec(),
+            stream_id: r.stream_id.as_bytes().to_vec().into(),
             ..Default::default()
         }
     }
@@ -193,7 +202,7 @@ mod test {
     macro_rules! invalid_uuid {
         ($msg:ident, $id:ident) => {
             let testee = $msg {
-                $id: vec![0, 159, 146, 150],
+                $id: vec![0, 159, 146, 150].into(),
                 ..Default::default()
             };
 

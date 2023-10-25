@@ -1,71 +1,68 @@
 //! データ型に関するモジュールです。
 
+use bytes::Bytes;
 use std::collections::HashMap;
 
 use crate::msg;
 
-pub type IdAliasMap = HashMap<msg::DataId, u32>;
+pub(crate) type IdAliasMap = HashMap<msg::DataId, u32>;
 pub type DataId = msg::DataId;
 pub type UpstreamInfo = msg::UpstreamInfo;
 
 /// データポイントです。
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct DataPoint {
-    /// データID
-    pub id: DataId,
     /// データポイントに付与された経過時間
     pub elapsed_time: chrono::Duration,
     /// ペイロード
-    pub payload: Vec<u8>,
-}
-impl DataPoint {
-    pub fn id(&self) -> DataId {
-        self.id.clone()
-    }
-
-    pub fn data_point_id(&self) -> DataPointId {
-        DataPointId {
-            id: self.id(),
-            elapsed_time: self.elapsed_time,
-        }
-    }
+    pub payload: Bytes,
 }
 
 impl Default for DataPoint {
     fn default() -> Self {
         Self {
-            id: DataId::new("", ""),
             elapsed_time: chrono::Duration::zero(),
-            payload: Vec::new(),
+            payload: Bytes::new(),
         }
     }
 }
 
-/// データポイントIDはデータIDと経過時間を保持する構造体です。
-#[derive(Clone, Eq, PartialEq, Hash, Debug)]
-pub struct DataPointId {
+/// データポイントグループです。
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct DataPointGroup {
     /// データID
     pub id: DataId,
-    /// データポイントに付与された経過時間
-    pub elapsed_time: chrono::Duration,
+    /// データポイント
+    pub data_points: Vec<DataPoint>,
 }
 
-/// [`DataPoint`]に対するAckです。
-#[derive(Clone, PartialEq, Debug)]
-pub struct Ack {
+/// アップストリームで送信するデータポイントです。
+#[derive(Clone, PartialEq, Eq, Default, Debug)]
+pub struct UpstreamChunk {
+    /// シーケンス番号
+    pub sequence_number: u32,
+    /// データポイント
+    pub data_point_groups: Vec<DataPointGroup>,
+}
+
+/// UpstreamChunkの処理結果です。
+#[derive(Clone, PartialEq, Eq, Default, Debug)]
+pub struct UpstreamChunkResult {
+    /// シーケンス番号
+    pub sequence_number: u32,
     /// 結果コード
     pub result_code: msg::ResultCode,
     /// 結果文字列
     pub result_string: String,
-    /// UpstreamChunkに含まれていたデータポイントID
-    pub data_point_ids: Vec<DataPointId>,
 }
 
 /// ダウンストリームで取得したデータポイントです。
-#[derive(Clone, PartialEq, Default, Debug)]
-pub struct DownstreamDataPoint {
+#[derive(Clone, PartialEq, Eq, Default, Debug)]
+pub struct DownstreamChunk {
+    /// シーケンス番号
+    pub sequence_number: u32,
     /// データポイント
-    pub data_point: DataPoint,
+    pub data_point_groups: Vec<DataPointGroup>,
     /// アップストリーム情報
     pub upstream: UpstreamInfo,
 }
@@ -79,55 +76,57 @@ pub struct DownstreamMetadata {
     pub metadata: msg::ReceivableMetadata,
 }
 
-/// E2Eのデータです。
-#[derive(Clone, PartialEq, Default, Debug)]
-pub struct E2EData {
-    /// データID
-    pub id: DataId,
+/// E2Eコールのデータです。
+#[derive(Clone, PartialEq, Eq, Default, Debug)]
+pub struct E2ECallData {
+    /// 名称
+    pub name: String,
+    /// 型
+    pub type_: String,
     /// ペイロード
-    pub payload: Vec<u8>,
+    pub payload: Bytes,
 }
 
 /// E2Eのアップストリームコールです。
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct UpstreamCall {
-    /// ノードID
+    /// 宛先ノードID
     pub destination_node_id: String,
-    /// データ
-    pub data: E2EData,
+    /// E2Eコールのデータ
+    pub e2e_call_data: E2ECallData,
 }
 
 /// E2Eのダウンストリームコールです。
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct DownstreamCall {
     /// コールID
     pub call_id: String,
     /// 送信元ノードID
     pub source_node_id: String,
-    /// データ
-    pub data: E2EData,
+    /// E2Eコールのデータ
+    pub e2e_call_data: E2ECallData,
 }
 
-/// E2Eのリプライ用のコールです。
+/// アップストリームリプライコールです。
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct UpstreamReplyCall {
-    /// 受信したE2EDownstreamCallのコールID
+    /// リクエストコールID
     pub request_call_id: String,
-    /// リプライ先のNodeID
+    /// 宛先ノードID
     pub destination_node_id: String,
-    /// データ
-    pub data: E2EData,
+    /// E2Eコールのデータ
+    pub e2e_call_data: E2ECallData,
 }
 
 /// E2Eのリプライ用のコールです。
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct DownstreamReplyCall {
-    /// コールID
-    pub call_id: String,
     /// リクエストコールID
     pub request_call_id: String,
     /// 送信元ノードID
     pub source_node_id: String,
-    /// データ
-    pub data: E2EData,
+    /// E2Eコールのデータ
+    pub e2e_call_data: E2ECallData,
 }
 
 impl From<msg::DownstreamCall> for DownstreamCall {
@@ -135,8 +134,9 @@ impl From<msg::DownstreamCall> for DownstreamCall {
         Self {
             call_id: c.call_id,
             source_node_id: c.source_node_id,
-            data: E2EData {
-                id: DataId::new(c.name, c.f_type),
+            e2e_call_data: E2ECallData {
+                name: c.name,
+                type_: c.type_,
                 payload: c.payload,
             },
         }
@@ -146,31 +146,13 @@ impl From<msg::DownstreamCall> for DownstreamCall {
 impl From<msg::DownstreamCall> for DownstreamReplyCall {
     fn from(c: msg::DownstreamCall) -> Self {
         Self {
-            call_id: c.call_id,
             request_call_id: c.request_call_id,
             source_node_id: c.source_node_id,
-            data: E2EData {
-                id: DataId::new(c.name, c.f_type),
+            e2e_call_data: E2ECallData {
+                name: c.name,
+                type_: c.type_,
                 payload: c.payload,
             },
         }
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    #[test]
-    fn data_point_id_hash() {
-        type Test = HashMap<DataPointId, i32>;
-        let mut test = Test::default();
-        let dp_id = DataPointId {
-            id: DataId::new("1", "1"),
-            elapsed_time: chrono::Duration::zero(),
-        };
-
-        test.insert(dp_id.clone(), 1);
-        assert!(test.get(&dp_id).is_some());
     }
 }

@@ -30,8 +30,8 @@ pub mod data_point_group {
 pub struct DataPoint {
     #[prost(sint64, tag="1")]
     pub elapsed_time: i64,
-    #[prost(bytes="vec", tag="2")]
-    pub payload: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes="bytes", tag="2")]
+    pub payload: ::prost::bytes::Bytes,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(PartialOrd, Ord, Eq, Hash)]
@@ -40,7 +40,8 @@ pub struct DataId {
     #[prost(string, tag="1")]
     pub name: ::prost::alloc::string::String,
     #[prost(string, tag="2")]
-    pub r#type: ::prost::alloc::string::String,
+    #[serde(rename = "type")]
+    pub type_: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -57,7 +58,8 @@ pub struct DataFilter {
     #[prost(string, tag="1")]
     pub name: ::prost::alloc::string::String,
     #[prost(string, tag="2")]
-    pub r#type: ::prost::alloc::string::String,
+    #[serde(rename = "type")]
+    pub type_: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(num_derive::FromPrimitive, num_derive::ToPrimitive)]
@@ -196,8 +198,8 @@ pub struct BaseTime {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UpstreamOpen {
-    #[prost(bytes="vec", tag="1")]
-    pub stream_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes="bytes", tag="1")]
+    pub stream_id: ::prost::bytes::Bytes,
     #[prost(string, tag="2")]
     pub session_id: ::prost::alloc::string::String,
     #[prost(enumeration="QoS", tag="3")]
@@ -206,16 +208,16 @@ pub struct UpstreamOpen {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UpstreamAbnormalClose {
-    #[prost(bytes="vec", tag="1")]
-    pub stream_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes="bytes", tag="1")]
+    pub stream_id: ::prost::bytes::Bytes,
     #[prost(string, tag="2")]
     pub session_id: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UpstreamResume {
-    #[prost(bytes="vec", tag="1")]
-    pub stream_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes="bytes", tag="1")]
+    pub stream_id: ::prost::bytes::Bytes,
     #[prost(string, tag="2")]
     pub session_id: ::prost::alloc::string::String,
     #[prost(enumeration="QoS", tag="3")]
@@ -224,8 +226,8 @@ pub struct UpstreamResume {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UpstreamNormalClose {
-    #[prost(bytes="vec", tag="1")]
-    pub stream_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes="bytes", tag="1")]
+    pub stream_id: ::prost::bytes::Bytes,
     #[prost(string, tag="2")]
     pub session_id: ::prost::alloc::string::String,
     #[prost(uint64, tag="3")]
@@ -236,8 +238,8 @@ pub struct UpstreamNormalClose {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DownstreamOpen {
-    #[prost(bytes="vec", tag="1")]
-    pub stream_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes="bytes", tag="1")]
+    pub stream_id: ::prost::bytes::Bytes,
     #[prost(message, repeated, tag="2")]
     pub downstream_filters: ::prost::alloc::vec::Vec<DownstreamFilter>,
     #[prost(enumeration="QoS", tag="3")]
@@ -246,14 +248,14 @@ pub struct DownstreamOpen {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DownstreamAbnormalClose {
-    #[prost(bytes="vec", tag="1")]
-    pub stream_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes="bytes", tag="1")]
+    pub stream_id: ::prost::bytes::Bytes,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DownstreamResume {
-    #[prost(bytes="vec", tag="1")]
-    pub stream_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes="bytes", tag="1")]
+    pub stream_id: ::prost::bytes::Bytes,
     #[prost(message, repeated, tag="2")]
     pub downstream_filters: ::prost::alloc::vec::Vec<DownstreamFilter>,
     #[prost(enumeration="QoS", tag="3")]
@@ -262,8 +264,8 @@ pub struct DownstreamResume {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DownstreamNormalClose {
-    #[prost(bytes="vec", tag="1")]
-    pub stream_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes="bytes", tag="1")]
+    pub stream_id: ::prost::bytes::Bytes,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -334,14 +336,16 @@ pub struct DownstreamOpenRequest {
     pub qos: i32,
     #[prost(message, optional, tag="7")]
     pub extension_fields: ::core::option::Option<DownstreamOpenRequestExtensionFields>,
+    #[prost(bool, tag="8")]
+    pub omit_empty_chunk: bool,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DownstreamOpenResponse {
     #[prost(uint32, tag="1")]
     pub request_id: u32,
-    #[prost(bytes="vec", tag="2")]
-    pub assigned_stream_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes="bytes", tag="2")]
+    pub assigned_stream_id: ::prost::bytes::Bytes,
     #[prost(sint64, tag="3")]
     pub server_time: i64,
     #[prost(enumeration="ResultCode", tag="4")]
@@ -356,8 +360,8 @@ pub struct DownstreamOpenResponse {
 pub struct DownstreamResumeRequest {
     #[prost(uint32, tag="1")]
     pub request_id: u32,
-    #[prost(bytes="vec", tag="2")]
-    pub stream_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes="bytes", tag="2")]
+    pub stream_id: ::prost::bytes::Bytes,
     #[prost(uint32, tag="3")]
     pub desired_stream_id_alias: u32,
     #[prost(message, optional, tag="4")]
@@ -380,8 +384,8 @@ pub struct DownstreamResumeResponse {
 pub struct DownstreamCloseRequest {
     #[prost(uint32, tag="1")]
     pub request_id: u32,
-    #[prost(bytes="vec", tag="2")]
-    pub stream_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes="bytes", tag="2")]
+    pub stream_id: ::prost::bytes::Bytes,
     #[prost(message, optional, tag="3")]
     pub extension_fields: ::core::option::Option<DownstreamCloseRequestExtensionFields>,
 }
@@ -510,16 +514,16 @@ pub struct DownstreamMetadataAck {
 pub struct UpstreamInfo {
     #[prost(string, tag="1")]
     pub session_id: ::prost::alloc::string::String,
-    #[prost(bytes="vec", tag="2")]
-    pub stream_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes="bytes", tag="2")]
+    pub stream_id: ::prost::bytes::Bytes,
     #[prost(string, tag="3")]
     pub source_node_id: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DownstreamChunkResult {
-    #[prost(bytes="vec", tag="1")]
-    pub stream_id_of_upstream: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes="bytes", tag="1")]
+    pub stream_id_of_upstream: ::prost::bytes::Bytes,
     #[prost(uint32, tag="2")]
     pub sequence_number_in_upstream: u32,
     #[prost(enumeration="ResultCode", tag="3")]
@@ -557,9 +561,10 @@ pub struct UpstreamCall {
     #[prost(string, tag="4")]
     pub name: ::prost::alloc::string::String,
     #[prost(string, tag="5")]
-    pub r#type: ::prost::alloc::string::String,
-    #[prost(bytes="vec", tag="6")]
-    pub payload: ::prost::alloc::vec::Vec<u8>,
+    #[serde(rename = "type")]
+    pub type_: ::prost::alloc::string::String,
+    #[prost(bytes="bytes", tag="6")]
+    pub payload: ::prost::bytes::Bytes,
     #[prost(message, optional, tag="7")]
     pub extension_fields: ::core::option::Option<UpstreamCallExtensionFields>,
 }
@@ -587,9 +592,10 @@ pub struct DownstreamCall {
     #[prost(string, tag="4")]
     pub name: ::prost::alloc::string::String,
     #[prost(string, tag="5")]
-    pub r#type: ::prost::alloc::string::String,
-    #[prost(bytes="vec", tag="6")]
-    pub payload: ::prost::alloc::vec::Vec<u8>,
+    #[serde(rename = "type")]
+    pub type_: ::prost::alloc::string::String,
+    #[prost(bytes="bytes", tag="6")]
+    pub payload: ::prost::bytes::Bytes,
     #[prost(message, optional, tag="7")]
     pub extension_fields: ::core::option::Option<DownstreamCallExtensionFields>,
 }
@@ -600,26 +606,6 @@ pub struct PingExtensionFields {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PongExtensionFields {
-}
-//
-// iSCP Messages
-//
-
-#[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct Ping {
-    #[prost(uint32, tag="1")]
-    pub request_id: u32,
-    #[prost(message, optional, tag="2")]
-    pub extension_fields: ::core::option::Option<PingExtensionFields>,
-}
-#[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct Pong {
-    #[prost(uint32, tag="1")]
-    pub request_id: u32,
-    #[prost(message, optional, tag="2")]
-    pub extension_fields: ::core::option::Option<PongExtensionFields>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -677,6 +663,26 @@ pub struct UpstreamChunkResultExtensionFields {
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Ping {
+    #[prost(uint32, tag="1")]
+    pub request_id: u32,
+    #[prost(message, optional, tag="2")]
+    pub extension_fields: ::core::option::Option<PingExtensionFields>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Pong {
+    #[prost(uint32, tag="1")]
+    pub request_id: u32,
+    #[prost(message, optional, tag="2")]
+    pub extension_fields: ::core::option::Option<PongExtensionFields>,
+}
+//
+// iSCP Messages
+//
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UpstreamOpenRequest {
     #[prost(uint32, tag="1")]
     pub request_id: u32,
@@ -698,8 +704,8 @@ pub struct UpstreamOpenRequest {
 pub struct UpstreamOpenResponse {
     #[prost(uint32, tag="1")]
     pub request_id: u32,
-    #[prost(bytes="vec", tag="2")]
-    pub assigned_stream_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes="bytes", tag="2")]
+    pub assigned_stream_id: ::prost::bytes::Bytes,
     #[prost(uint32, tag="3")]
     pub assigned_stream_id_alias: u32,
     #[prost(map="uint32, message", tag="4")]
@@ -718,8 +724,8 @@ pub struct UpstreamOpenResponse {
 pub struct UpstreamResumeRequest {
     #[prost(uint32, tag="1")]
     pub request_id: u32,
-    #[prost(bytes="vec", tag="2")]
-    pub stream_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes="bytes", tag="2")]
+    pub stream_id: ::prost::bytes::Bytes,
     #[prost(message, optional, tag="3")]
     pub extension_fields: ::core::option::Option<UpstreamResumeRequestExtensionFields>,
 }
@@ -742,8 +748,8 @@ pub struct UpstreamResumeResponse {
 pub struct UpstreamCloseRequest {
     #[prost(uint32, tag="1")]
     pub request_id: u32,
-    #[prost(bytes="vec", tag="2")]
-    pub stream_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes="bytes", tag="2")]
+    pub stream_id: ::prost::bytes::Bytes,
     #[prost(uint64, tag="3")]
     pub total_data_points: u64,
     #[prost(uint32, tag="4")]

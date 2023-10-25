@@ -17,21 +17,25 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use uuid::Uuid;
 
 use crate::{
-    msg, Cancel, DownstreamDataPoint, DownstreamFilter, DownstreamMetadata, Error, QoS, Result,
-    WaitGroup, Waiter,
+    msg, Cancel, Conn, DataId, DataPoint, DataPointGroup, DownstreamChunk, DownstreamFilter,
+    DownstreamMetadata, Error, QoS, Result, WaitGroup, Waiter,
 };
 
 /// ダウンストリームの設定です。
 #[derive(Clone, Debug)]
 pub struct DownstreamConfig {
-    /// ダウンストリームフィルター
+    /// フィルターのリスト
     pub filters: Vec<DownstreamFilter>,
-    /// データIDエイリアス
+    /// 有効期限
     pub expiry_interval: chrono::Duration,
     /// QoS
     pub qos: QoS,
-    // TODO: add データIDエイリアス
-    // TODO: add Ackのインターバル
+    /// データIDエイリアス
+    pub data_ids: Vec<DataId>,
+    /// Ackのインターバル
+    pub ack_interval: chrono::Duration,
+    /// 空チャンク省略フラグ。trueの場合、StreamChunk内のDataPointGroupが空の時、DownstreamChunkの送信を省略します。
+    pub omit_empty_chunk: bool,
 }
 
 impl Default for DownstreamConfig {
@@ -40,34 +44,46 @@ impl Default for DownstreamConfig {
             filters: Vec::new(),
             expiry_interval: chrono::Duration::zero(),
             qos: QoS::Unreliable,
+            data_ids: Vec::new(),
+            ack_interval: chrono::Duration::milliseconds(10),
+            omit_empty_chunk: false,
         }
     }
 }
 
-pub type BoxedDownstreamOption = Box<dyn Fn(&mut DownstreamConfig)>;
+impl msg::DownstreamOpenRequest {
+    pub(crate) fn from_config(config: &DownstreamConfig) -> Self {
+        let data_id_aliases: HashMap<u32, DataId> = config
+            .data_ids
+            .iter()
+            .enumerate()
+            .map(|(i, data_id)| ((i + 1) as u32, data_id.clone()))
+            .collect();
 
-impl DownstreamConfig {
-    pub fn new_with(filters: Vec<DownstreamFilter>, opts: Vec<BoxedDownstreamOption>) -> Self {
-        let mut cfg = DownstreamConfig {
-            filters,
-            ..Default::default()
-        };
-        for opt in opts.iter() {
-            opt(&mut cfg);
-        }
-        cfg
-    }
-}
-
-impl From<DownstreamConfig> for msg::DownstreamOpenRequest {
-    fn from(c: DownstreamConfig) -> Self {
         Self {
-            expiry_interval: c.expiry_interval,
-            downstream_filters: c.filters,
-            qos: c.qos,
+            expiry_interval: config.expiry_interval,
+            downstream_filters: config.filters.clone(),
+            qos: config.qos,
+            data_id_aliases,
+            omit_empty_chunk: config.omit_empty_chunk,
             ..Default::default()
         }
     }
+}
+
+/// ダウンストリームの状態です。
+#[derive(Clone, Debug)]
+pub struct DownstreamState {
+    /// データIDエイリアスとデータIDのマップ
+    pub data_id_aliases: HashMap<u32, DataId>,
+    /// 最後に払い出されたデータIDエイリアス
+    pub last_issued_data_id_alias: u32,
+    /// アップストリームエイリアスとアップストリーム情報のマップ
+    pub upstream_infos: HashMap<u32, msg::UpstreamInfo>,
+    /// 最後に払い出されたアップストリーム情報のエイリアス
+    pub last_issued_upstream_info_alias: u32,
+    /// 最後に払い出されたAckのシーケンス番号
+    pub last_issued_chunk_ack_id: u32,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -83,18 +99,13 @@ impl Default for ConnectionState {
     }
 }
 
-/// ダウンストリームの状態です。
+/// 内部的なダウンストリームの状態
 #[derive(Default, Debug)]
 struct State {
     /// ID
     stream_id: Uuid,
     stream_id_alias: u32,
 
-    // TODO: add データIDエイリアスとデータIDのマップ
-    // TODO: add 最後に払い出されたデータIDエイリアス
-    // TODO: add アップストリームエイリアスとアップストリーム情報のマップ
-    // TODO: add 最後に払い出されたアップストリーム情報のエイリアス
-    // TODO: add 最後に払い出されたAckのシーケンス番号
     /// DownstreamOpenResponseで返却されたサーバー時刻
     server_time: DateTime<Utc>,
 
@@ -105,6 +116,18 @@ struct State {
     ack_buf: Mutex<Vec<msg::DownstreamChunkResult>>,
     source_node_ids: Vec<String>,
     last_recv_sequences: Mutex<HashMap<msg::UpstreamInfo, u32>>,
+    error_in_close: Mutex<Option<Error>>,
+}
+
+/// ダウンストリームのクローズイベントです。
+#[derive(Clone, Debug)]
+pub struct DownstreamClosedEvent {
+    /// 切断したダウンストリームの設定
+    pub config: Arc<DownstreamConfig>,
+    /// 切断したダウンストリームの状態
+    pub state: DownstreamState,
+    /// 切断に失敗した場合のエラー情報
+    pub error: Option<Error>,
 }
 
 impl State {
@@ -181,7 +204,6 @@ impl<T> AliasState<T>
 where
     T: Eq + Clone,
 {
-    #[allow(dead_code)]
     fn new(map: HashMap<u32, T>) -> Self {
         Self {
             alias: AtomicU32::new(map.len() as u32 + 1u32),
@@ -189,13 +211,16 @@ where
             buf: Mutex::default(),
         }
     }
+
     fn next_alias(&self) -> u32 {
         self.alias.fetch_add(1, Ordering::Release)
     }
+
     fn exist_alias(&self, data: &T) -> bool {
         let g = self.map.lock().unwrap();
         g.iter().any(|(_, v)| data == v)
     }
+
     fn assign_alias(&self, data: &T) -> Option<u32> {
         if self.exist_alias(data) {
             return None;
@@ -217,6 +242,7 @@ where
         let buf: Vec<(u32, T)> = std::mem::take(buf.as_mut());
         buf.into_iter().collect()
     }
+
     fn find(&self, alias: u32) -> Option<T> {
         let mut g = self.map.lock().unwrap();
         match g.entry(alias) {
@@ -224,12 +250,13 @@ where
             Entry::Vacant(_) => None,
         }
     }
+
     fn map(&self) -> HashMap<u32, T> {
         self.map.lock().unwrap().clone()
     }
 }
 
-type DataPointsSender = oneshot::Sender<DownstreamDataPoint>;
+type DownstreamChunkSender = oneshot::Sender<DownstreamChunk>;
 type MetadataSender = oneshot::Sender<DownstreamMetadata>;
 
 pub(super) struct DownstreamParam {
@@ -248,11 +275,11 @@ pub struct Downstream {
     cancel: Cancel,
     conn: Arc<dyn crate::wire::Connection>,
     state: Arc<State>,
-    data_points_cmd_sender: mpsc::Sender<DataPointsSender>,
+    data_points_cmd_sender: mpsc::Sender<DownstreamChunkSender>,
     metadata_cmd_sender: mpsc::Sender<MetadataSender>,
-    notify_close: broadcast::Sender<()>,
+    notify_close: broadcast::Sender<DownstreamClosedEvent>,
     repository: Arc<dyn super::DownstreamRepository>,
-    config: DownstreamConfig,
+    config: Arc<DownstreamConfig>,
 }
 
 impl fmt::Debug for Downstream {
@@ -268,7 +295,8 @@ impl fmt::Debug for Downstream {
 impl Downstream {
     pub(super) fn new(
         conn: Arc<dyn crate::wire::Connection>,
-        config: DownstreamConfig,
+        config: Arc<DownstreamConfig>,
+        data_id_aliases: HashMap<u32, DataId>,
         param: DownstreamParam,
     ) -> Self {
         let (data_points_cmd_sender, data_points_cmd_receiver) = mpsc::channel(1);
@@ -286,6 +314,7 @@ impl Downstream {
                 conn: AtomicCell::new(ConnectionState::Open),
                 source_node_ids: param.source_node_ids,
                 server_time: param.server_time,
+                data_ids: AliasState::new(data_id_aliases),
                 ..Default::default()
             }),
             data_points_cmd_sender,
@@ -316,8 +345,13 @@ impl Downstream {
         });
 
         let down_c = down.clone();
+        let ack_interval = down
+            .config
+            .ack_interval
+            .to_std()
+            .unwrap_or_else(|_| Duration::from_millis(10));
         tokio::spawn(async move {
-            down_c.ack_flush_loop(wg, Duration::from_millis(10)).await;
+            down_c.ack_flush_loop(wg, ack_interval).await;
         });
 
         let down_c = down.clone();
@@ -327,7 +361,7 @@ impl Downstream {
     }
 
     /// ダウンストリームデータポイントを受信します。
-    pub async fn read_data_point(&self) -> Option<DownstreamDataPoint> {
+    pub async fn read_data_points(&self) -> Option<DownstreamChunk> {
         if !self.state.is_open() {
             warn!("closed");
             return None;
@@ -350,7 +384,9 @@ impl Downstream {
     }
 
     /// ダウンストリームメタデータを受信します。
-    pub async fn recv_metadata(&self) -> Option<DownstreamMetadata> {
+    ///
+    /// 内部のチャンネルサイズの制限により、ダウンストリームが1024個より多い場合、または処理しきれないほどのメタデータが送られた場合、メタデータが失われることがあります。
+    pub async fn read_metadata(&self) -> Option<DownstreamMetadata> {
         if !self.state.is_open() {
             return None;
         }
@@ -396,7 +432,9 @@ impl Downstream {
             .await?;
 
         if !resp.result_code.is_succeeded() {
-            return Err(Error::from(resp));
+            let e = Error::from(resp);
+            *self.state.error_in_close.lock().unwrap() = Some(e.clone());
+            return Err(e);
         }
 
         log_err!(
@@ -408,17 +446,50 @@ impl Downstream {
         Ok(())
     }
 
-    /// ダウンストリームの生成に使用したパラメーターを返します。
-    pub fn to_config(&self) -> DownstreamConfig {
+    /// ダウンストリームの設定を返します。
+    pub fn config(&self) -> Arc<DownstreamConfig> {
         self.config.clone()
+    }
+
+    /// ダウンストリームの状態を取得します
+    pub fn state(&self) -> DownstreamState {
+        let data_id_aliases = self.state.data_ids.map();
+        let last_issued_data_id_alias = self.state.data_ids.alias.load(Ordering::Acquire) - 1;
+        let upstream_infos = self.state.upstreams_info.map();
+        let last_issued_upstream_info_alias =
+            self.state.upstreams_info.alias.load(Ordering::Acquire) - 1;
+        let last_issued_chunk_ack_id = self.state.ack_id.load(Ordering::Acquire);
+
+        DownstreamState {
+            data_id_aliases,
+            last_issued_data_id_alias,
+            upstream_infos,
+            last_issued_upstream_info_alias,
+            last_issued_chunk_ack_id,
+        }
+    }
+
+    /// ストリームIDを取得します
+    pub fn stream_id(&self) -> uuid::Uuid {
+        self.state.stream_id
+    }
+
+    /// DownstreamOpenResponseで返却されたサーバー時刻を取得します
+    pub fn server_time(&self) -> DateTime<Utc> {
+        self.state.server_time
+    }
+
+    /// ダウンストリームのクローズをサブスクライブします。
+    pub fn subscribe_close(&self) -> DownstreamClosedNotificationReceiver {
+        DownstreamClosedNotificationReceiver(self.notify_close.subscribe())
     }
 }
 
 impl Downstream {
     async fn data_points_cmd_loop(
         &self,
-        mut cmd_receiver: mpsc::Receiver<DataPointsSender>,
-        mut data_points_receiver: mpsc::Receiver<DownstreamDataPoint>,
+        mut cmd_receiver: mpsc::Receiver<DownstreamChunkSender>,
+        mut data_points_receiver: mpsc::Receiver<DownstreamChunk>,
     ) -> Result<()> {
         let mut points_to_send = None;
         while let Some(sender) = cmd_receiver.recv().await {
@@ -451,14 +522,12 @@ impl Downstream {
     async fn read_data_points_loop(
         &self,
         mut recv: mpsc::Receiver<msg::DownstreamChunk>,
-        sender: mpsc::Sender<DownstreamDataPoint>,
+        sender: mpsc::Sender<DownstreamChunk>,
     ) {
-        while let Some(points) = recv.recv().await {
-            let err = match self.process_data_points(points) {
+        while let Some(received_chunk) = recv.recv().await {
+            let err = match self.process_data_points(received_chunk) {
                 Ok(data) => {
-                    for d in data.into_iter() {
-                        log_err!(warn, sender.try_send(d));
-                    }
+                    log_err!(warn, sender.try_send(data));
                     continue;
                 }
                 Err(err) => err,
@@ -494,7 +563,7 @@ impl Downstream {
         &self,
         _wg: WaitGroup,
         mut receiver: mpsc::Receiver<msg::Message>,
-        cmd_receiver: mpsc::Receiver<DataPointsSender>,
+        cmd_receiver: mpsc::Receiver<DownstreamChunkSender>,
     ) {
         let (dps_s, dps_r) = mpsc::channel(1);
         let (res_s, res_r) = mpsc::channel(1024);
@@ -524,7 +593,7 @@ impl Downstream {
 
     fn filter_metadata(&self, msg: msg::DownstreamMetadata) -> Option<DownstreamMetadata> {
         for id in self.state.source_node_ids.iter() {
-            if id == &msg.source_node_id {
+            if id == &msg.source_node_id && self.state.stream_id_alias == msg.stream_id_alias {
                 return Some(DownstreamMetadata {
                     source_node_id: msg.source_node_id,
                     metadata: msg.metadata,
@@ -577,8 +646,8 @@ impl Downstream {
                     match res {
                        Ok(data) => data,
                        Err(err) => {
-                           error!("{}", err);
-                           continue
+                           error!("cannot receive in metadata read loop: {}", err);
+                           break;
                        }
                     }
                 }
@@ -593,7 +662,7 @@ impl Downstream {
     fn process_data_points(
         &self,
         downstream_chunk: msg::DownstreamChunk,
-    ) -> Result<Vec<DownstreamDataPoint>> {
+    ) -> Result<DownstreamChunk> {
         let info = match downstream_chunk.upstream_or_alias {
             msg::UpstreamOrAlias::UpstreamInfo(info) => {
                 self.update_upstream_alias(&info);
@@ -610,7 +679,7 @@ impl Downstream {
             },
         };
 
-        let mut data = Vec::new();
+        let mut data_point_groups = Vec::new();
         for data_point_group in downstream_chunk.stream_chunk.data_point_groups.into_iter() {
             let id = match data_point_group.data_id_or_alias {
                 msg::DataIdOrAlias::DataIdAlias(alias) => match self.state.data_ids.find(alias) {
@@ -631,13 +700,16 @@ impl Downstream {
                 }
             };
 
-            for data_point in data_point_group.data_points.into_iter() {
-                data.push(super::DataPoint {
-                    id: id.clone(),
-                    payload: data_point.payload,
-                    elapsed_time: chrono::Duration::nanoseconds(data_point.elapsed_time),
-                });
-            }
+            let data_points: Vec<DataPoint> = data_point_group
+                .data_points
+                .into_iter()
+                .map(|dp| DataPoint {
+                    payload: dp.payload,
+                    elapsed_time: chrono::Duration::nanoseconds(dp.elapsed_time),
+                })
+                .collect();
+
+            data_point_groups.push(DataPointGroup { id, data_points });
         }
 
         let sequence_number_in_upstream = downstream_chunk.stream_chunk.sequence_number;
@@ -656,35 +728,45 @@ impl Downstream {
             .update_last_recv_sequences(info.clone(), sequence_number_in_upstream)
             .is_none()
         {
-            return Ok(Vec::new());
+            return Ok(DownstreamChunk {
+                sequence_number: downstream_chunk.stream_chunk.sequence_number,
+                data_point_groups: vec![],
+                upstream: info,
+            });
         }
 
-        let res = data
-            .into_iter()
-            .map(|d| DownstreamDataPoint {
-                data_point: d,
-                upstream: info.clone(),
-            })
-            .collect::<Vec<_>>();
-
-        Ok(res)
+        Ok(DownstreamChunk {
+            sequence_number: downstream_chunk.stream_chunk.sequence_number,
+            data_point_groups,
+            upstream: info,
+        })
     }
 
     async fn close_waiter(&self, mut waiter: Waiter) {
-        let mut conn_close_notified = self.conn.subscribe_close_notify();
+        let mut conn_disconnect_notified = self.conn.subscribe_disconnect_notify();
 
         tokio::select! {
             _ = waiter.wait() => {
                 info!("all tasks closed")
             },
-            _ = conn_close_notified.recv() => {
+            _ = conn_disconnect_notified.recv() => {
                 info!("conn closed")
             },
         };
 
         log_err!(error, self.repository.save_downstream(&self.info()));
         self.state.conn.store(ConnectionState::Closed);
-        log_err!(trace, self.notify_close.send(()));
+        let closed_event = DownstreamClosedEvent {
+            config: self.config.clone(),
+            state: self.state(),
+            error: self
+                .state
+                .error_in_close
+                .lock()
+                .ok()
+                .and_then(|e| e.clone()),
+        };
+        log_err!(trace, self.notify_close.send(closed_event));
     }
 
     fn is_final_ack_sended(&self) -> bool {
@@ -734,8 +816,8 @@ impl Downstream {
         }
     }
 
-    async fn ack_flush_loop(&self, _wg: WaitGroup, interval: std::time::Duration) {
-        let mut ticker = tokio::time::interval(interval);
+    async fn ack_flush_loop(&self, _wg: WaitGroup, ack_interval: std::time::Duration) {
+        let mut ticker = tokio::time::interval(ack_interval);
         while !self.is_final_ack_sended() {
             ticker.tick().await;
             if let Err(e) = self.send_ack().await {
@@ -759,22 +841,71 @@ impl Downstream {
     }
 }
 
+/// ダウンストリームのクローズイベントを受け取るレシーバーです。
+#[derive(Debug)]
+pub struct DownstreamClosedNotificationReceiver(broadcast::Receiver<DownstreamClosedEvent>);
+
+impl DownstreamClosedNotificationReceiver {
+    pub async fn recv(&mut self) -> Option<DownstreamClosedEvent> {
+        self.0.recv().await.ok()
+    }
+}
+
+/// ダウンストリームのビルダーです。
+pub struct DownstreamBuilder<'a> {
+    pub(crate) conn: &'a Conn,
+    pub(crate) config: DownstreamConfig,
+}
+
+impl<'a> DownstreamBuilder<'a> {
+    /// ダウンストリームのオープン
+    pub async fn build(self) -> Result<Downstream> {
+        self.conn.open_downstream(self.config).await
+    }
+
+    /// 有効期限
+    pub fn expiry_interval(mut self, expiry_interval: chrono::Duration) -> Self {
+        self.config.expiry_interval = expiry_interval;
+        self
+    }
+
+    /// QoS
+    pub fn qos(mut self, qos: QoS) -> Self {
+        self.config.qos = qos;
+        self
+    }
+
+    /// データIDエイリアス
+    pub fn data_ids(mut self, data_ids: Vec<DataId>) -> Self {
+        self.config.data_ids = data_ids;
+        self
+    }
+
+    /// Ackのインターバル
+    pub fn ack_interval(mut self, ack_interval: chrono::Duration) -> Self {
+        self.config.ack_interval = ack_interval;
+        self
+    }
+
+    /// 空チャンク省略フラグ。trueの場合、StreamChunk内のDataPointGroupが空の時、DownstreamChunkの送信を省略します。
+    pub fn omit_empty_chunk(mut self, omit_empty_chunk: bool) -> Self {
+        self.config.omit_empty_chunk = omit_empty_chunk;
+        self
+    }
+}
+
 #[allow(clippy::vec_init_then_push)]
 #[cfg(test)]
 mod test {
     use tokio::sync::broadcast;
 
     use super::*;
-    use crate::wire::{self, CloseNotificationReceiver};
+    use crate::wire::{self, DisconnectNotificationReceiver};
 
-    fn new_downstream_with_wire_conn(mut mock: wire::MockMockConnection) -> Downstream {
+    fn new_downstream_with_wire_conn(mock: wire::MockMockConnection) -> Downstream {
         let (notify_close, _) = broadcast::channel(1);
         let (data_points_cmd_sender, _) = mpsc::channel(1);
         let (metadata_cmd_sender, _) = mpsc::channel(1);
-
-        let r = notify_close.subscribe();
-        mock.expect_subscribe_close_notify()
-            .return_once(|| CloseNotificationReceiver::new(r));
 
         Downstream {
             cancel: Cancel::new(),
@@ -784,7 +915,7 @@ mod test {
             data_points_cmd_sender,
             metadata_cmd_sender,
             repository: Arc::new(super::super::InMemStreamRepository::new()),
-            config: DownstreamConfig::default(),
+            config: Arc::new(DownstreamConfig::default()),
         }
     }
 
@@ -809,5 +940,586 @@ mod test {
                 ..Default::default()
             })
             .is_none());
+    }
+
+    #[test]
+    fn alias_update() {
+        struct Case {
+            name: String,
+            init_state: State,
+            points: msg::DownstreamChunk,
+            want_id_aliases: HashMap<u32, msg::DataId>,
+            want_upstream_aliases: HashMap<u32, msg::UpstreamInfo>,
+        }
+
+        let mut cases = Vec::new();
+        cases.push(Case {
+            name: "exist upstream alias".to_string(),
+            init_state: State {
+                upstreams_info: AliasState {
+                    alias: AtomicU32::new(1),
+                    map: Mutex::new(
+                        [(
+                            1,
+                            msg::UpstreamInfo {
+                                source_node_id: "source_node_id".to_string(),
+                                stream_id: Uuid::parse_str("11111111-1111-1111-1111-111111111111")
+                                    .unwrap(),
+                                session_id: "session_id".to_string(),
+                            },
+                        )]
+                        .iter()
+                        .cloned()
+                        .collect(),
+                    ),
+                    buf: Mutex::default(),
+                },
+                ..Default::default()
+            },
+            points: msg::DownstreamChunk {
+                upstream_or_alias: 1.into(),
+                stream_chunk: msg::StreamChunk {
+                    sequence_number: 1,
+                    data_point_groups: vec![msg::DataPointGroup {
+                        data_id_or_alias: msg::DataId::new("1", "1").into(),
+                        data_points: vec![],
+                    }],
+                },
+                ..Default::default()
+            },
+            want_id_aliases: [(
+                1,
+                msg::DataId {
+                    name: "1".to_string(),
+                    type_: "1".to_string(),
+                },
+            )]
+            .iter()
+            .cloned()
+            .collect(),
+            want_upstream_aliases: [(
+                1,
+                msg::UpstreamInfo {
+                    source_node_id: "source_node_id".to_string(),
+                    stream_id: Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap(),
+                    session_id: "session_id".to_string(),
+                },
+            )]
+            .iter()
+            .cloned()
+            .collect(),
+        });
+
+        cases.push(Case {
+            name: "exist data id alias".to_string(),
+            init_state: State {
+                data_ids: AliasState {
+                    alias: AtomicU32::new(1),
+                    map: Mutex::new(
+                        [(
+                            1,
+                            msg::DataId {
+                                name: "1".to_string(),
+                                type_: "1".to_string(),
+                            },
+                        )]
+                        .iter()
+                        .cloned()
+                        .collect(),
+                    ),
+                    buf: Mutex::default(),
+                },
+                ..Default::default()
+            },
+            points: msg::DownstreamChunk {
+                upstream_or_alias: msg::UpstreamInfo {
+                    source_node_id: "source_node_id".to_string(),
+                    stream_id: Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap(),
+                    session_id: "session_id".to_string(),
+                }
+                .into(),
+                stream_chunk: msg::StreamChunk {
+                    sequence_number: 1,
+                    data_point_groups: vec![msg::DataPointGroup {
+                        data_points: vec![],
+                        data_id_or_alias: msg::DataId::new("1", "1").into(),
+                    }],
+                },
+                ..Default::default()
+            },
+            want_id_aliases: [(1, msg::DataId::new("1", "1"))].iter().cloned().collect(),
+            want_upstream_aliases: [(
+                1,
+                msg::UpstreamInfo {
+                    source_node_id: "source_node_id".to_string(),
+                    stream_id: Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap(),
+                    session_id: "session_id".to_string(),
+                },
+            )]
+            .iter()
+            .cloned()
+            .collect(),
+        });
+        cases.push(Case {
+            name: "exist data id and upstream alias".to_string(),
+            init_state: State {
+                data_ids: AliasState {
+                    alias: AtomicU32::new(1),
+                    map: Mutex::new([(1, msg::DataId::new("1", "1"))].iter().cloned().collect()),
+                    buf: Mutex::default(),
+                },
+                upstreams_info: AliasState {
+                    alias: AtomicU32::new(1),
+                    map: Mutex::new(
+                        [(
+                            1,
+                            msg::UpstreamInfo {
+                                source_node_id: "source_node_id".to_string(),
+                                stream_id: Uuid::parse_str("11111111-1111-1111-1111-111111111111")
+                                    .unwrap(),
+                                session_id: "session_id".to_string(),
+                            },
+                        )]
+                        .iter()
+                        .cloned()
+                        .collect(),
+                    ),
+                    buf: Mutex::default(),
+                },
+                ..Default::default()
+            },
+            points: msg::DownstreamChunk {
+                upstream_or_alias: 1.into(),
+                stream_chunk: msg::StreamChunk {
+                    sequence_number: 1,
+                    data_point_groups: vec![msg::DataPointGroup {
+                        data_points: vec![],
+                        data_id_or_alias: 1.into(),
+                    }],
+                },
+                ..Default::default()
+            },
+            want_id_aliases: [(1, msg::DataId::new("1", "1"))].iter().cloned().collect(),
+            want_upstream_aliases: [(
+                1,
+                msg::UpstreamInfo {
+                    source_node_id: "source_node_id".to_string(),
+                    stream_id: Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap(),
+                    session_id: "session_id".to_string(),
+                },
+            )]
+            .iter()
+            .cloned()
+            .collect(),
+        });
+
+        impl Case {
+            async fn test(self) {
+                let mock_conn = wire::MockMockConnection::new();
+                let mut down = new_downstream_with_wire_conn(mock_conn);
+                down.state = Arc::new(self.init_state);
+
+                down.process_data_points(self.points.clone())
+                    .expect(&self.name);
+
+                {
+                    let upstream_aliases = down.state.upstreams_info.map.lock().unwrap();
+                    let data_id_aliases = down.state.data_ids.map.lock().unwrap();
+
+                    assert_eq!(*upstream_aliases, self.want_upstream_aliases);
+                    assert_eq!(*data_id_aliases, self.want_id_aliases);
+                }
+                assert_eq!(down.state().data_id_aliases, self.want_id_aliases);
+            }
+        }
+
+        let run = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        cases.into_iter().for_each(|case| run.block_on(case.test()));
+    }
+
+    #[test]
+    fn process_data_points() {
+        struct Case {
+            input: msg::DownstreamChunk,
+            state: Arc<State>,
+            want: DownstreamChunk,
+            want_result: Result<msg::DownstreamChunkResult>,
+        }
+        impl Case {
+            fn test(&self) {
+                let mut down = new_downstream_with_wire_conn(wire::MockMockConnection::new());
+                down.state = self.state.clone();
+                let res = down.process_data_points(self.input.to_owned());
+                if self.want_result.is_err() {
+                    assert!(res.is_err());
+                    return;
+                } else {
+                    assert!(res.is_ok());
+                    let got_points = res.unwrap();
+                    assert_eq!(got_points, self.want);
+                }
+
+                if let Ok(result) = &self.want_result {
+                    assert_eq!(
+                        result.clone(),
+                        *down.state.ack_buf.lock().unwrap().first().unwrap()
+                    );
+                }
+            }
+        }
+
+        let mut cases = Vec::new();
+        // ok: no alias
+        cases.push(Case {
+            input: msg::DownstreamChunk {
+                upstream_or_alias: msg::UpstreamInfo {
+                    source_node_id: "source_node_id".to_string(),
+                    stream_id: Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap(),
+                    session_id: "session".to_string(),
+                }
+                .into(),
+                stream_chunk: msg::StreamChunk {
+                    sequence_number: 1,
+                    data_point_groups: vec![msg::DataPointGroup {
+                        data_id_or_alias: msg::DataId::new("name", "type").into(),
+                        data_points: vec![msg::DataPoint {
+                            elapsed_time: chrono::Duration::seconds(1).num_nanoseconds().unwrap(),
+                            payload: vec![1, 2, 3, 4].into(),
+                        }],
+                    }],
+                },
+                ..Default::default()
+            },
+            state: Arc::default(),
+            want: DownstreamChunk {
+                sequence_number: 1,
+                data_point_groups: vec![DataPointGroup {
+                    id: DataId::new("name", "type"),
+                    data_points: vec![DataPoint {
+                        payload: vec![1, 2, 3, 4].into(),
+                        elapsed_time: chrono::Duration::seconds(1),
+                    }],
+                }],
+                upstream: msg::UpstreamInfo {
+                    source_node_id: "source_node_id".to_string(),
+                    stream_id: Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap(),
+                    session_id: "session".to_string(),
+                },
+            },
+            want_result: Ok(msg::DownstreamChunkResult {
+                sequence_number_in_upstream: 1,
+                stream_id_of_upstream: Uuid::parse_str("11111111-1111-1111-1111-111111111111")
+                    .unwrap(),
+                result_code: msg::ResultCode::Succeeded,
+                result_string: "OK".to_string(),
+            }),
+        });
+        // ok: exist alias
+        cases.push(Case {
+            input: msg::DownstreamChunk {
+                upstream_or_alias: 1.into(),
+                stream_chunk: msg::StreamChunk {
+                    sequence_number: 1,
+                    data_point_groups: vec![msg::DataPointGroup {
+                        data_id_or_alias: 1.into(),
+                        data_points: vec![msg::DataPoint {
+                            elapsed_time: chrono::Duration::seconds(1).num_nanoseconds().unwrap(),
+                            payload: vec![1, 2, 3, 4].into(),
+                        }],
+                    }],
+                },
+                ..Default::default()
+            },
+            state: Arc::new(State {
+                data_ids: AliasState {
+                    map: Mutex::new(
+                        [(1, msg::DataId::new("name", "type"))]
+                            .iter()
+                            .cloned()
+                            .collect(),
+                    ),
+                    ..Default::default()
+                },
+                upstreams_info: AliasState {
+                    map: Mutex::new(
+                        [(
+                            1,
+                            msg::UpstreamInfo {
+                                source_node_id: "source_node_id".to_string(),
+                                stream_id: Uuid::parse_str("11111111-1111-1111-1111-111111111111")
+                                    .unwrap(),
+                                session_id: "session".to_string(),
+                            },
+                        )]
+                        .iter()
+                        .cloned()
+                        .collect(),
+                    ),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            want: DownstreamChunk {
+                sequence_number: 1,
+                data_point_groups: vec![DataPointGroup {
+                    id: DataId::new("name", "type"),
+                    data_points: vec![DataPoint {
+                        payload: vec![1, 2, 3, 4].into(),
+                        elapsed_time: chrono::Duration::seconds(1),
+                    }],
+                }],
+                upstream: msg::UpstreamInfo {
+                    source_node_id: "source_node_id".to_string(),
+                    stream_id: Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap(),
+                    session_id: "session".to_string(),
+                },
+            },
+            want_result: Ok(msg::DownstreamChunkResult {
+                sequence_number_in_upstream: 1,
+                stream_id_of_upstream: Uuid::parse_str("11111111-1111-1111-1111-111111111111")
+                    .unwrap(),
+                result_code: msg::ResultCode::Succeeded,
+                result_string: "OK".to_string(),
+            }),
+        });
+        // ng: not exist upstream alias
+        cases.push(Case {
+            input: msg::DownstreamChunk {
+                upstream_or_alias: 1.into(),
+                stream_chunk: msg::StreamChunk {
+                    sequence_number: 1,
+                    data_point_groups: vec![msg::DataPointGroup {
+                        data_id_or_alias: 1.into(),
+                        data_points: vec![msg::DataPoint {
+                            elapsed_time: chrono::Duration::seconds(1).num_nanoseconds().unwrap(),
+                            payload: vec![1, 2, 3, 4].into(),
+                        }],
+                    }],
+                },
+                ..Default::default()
+            },
+            state: Arc::new(State {
+                data_ids: AliasState {
+                    map: Mutex::new(
+                        [(1, msg::DataId::new("name", "type"))]
+                            .iter()
+                            .cloned()
+                            .collect(),
+                    ),
+                    ..Default::default()
+                },
+                upstreams_info: AliasState::default(),
+                ..Default::default()
+            }),
+            want: DownstreamChunk::default(),
+            want_result: Err(Error::FailedMessage {
+                code: msg::ResultCode::ProtocolError,
+                detail: "".into(),
+            }),
+        });
+        // ng: not exist data id alias
+        cases.push(Case {
+            input: msg::DownstreamChunk {
+                upstream_or_alias: 1.into(),
+                stream_chunk: msg::StreamChunk {
+                    sequence_number: 1,
+                    data_point_groups: vec![msg::DataPointGroup {
+                        data_id_or_alias: 1.into(),
+                        data_points: vec![msg::DataPoint {
+                            elapsed_time: chrono::Duration::seconds(1).num_nanoseconds().unwrap(),
+                            payload: vec![1, 2, 3, 4].into(),
+                        }],
+                    }],
+                },
+                ..Default::default()
+            },
+            state: Arc::new(State {
+                data_ids: AliasState::default(),
+                upstreams_info: AliasState {
+                    map: Mutex::new(
+                        [(
+                            1,
+                            msg::UpstreamInfo {
+                                source_node_id: "source_node_id".to_string(),
+                                stream_id: Uuid::parse_str("11111111-1111-1111-1111-111111111111")
+                                    .unwrap(),
+                                session_id: "session".to_string(),
+                            },
+                        )]
+                        .iter()
+                        .cloned()
+                        .collect(),
+                    ),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            want: DownstreamChunk::default(),
+            want_result: Err(Error::FailedMessage {
+                code: msg::ResultCode::ProtocolError,
+                detail: "".into(),
+            }),
+        });
+
+        cases.into_iter().for_each(|case| case.test());
+    }
+
+    #[test]
+    fn send_ack() {
+        struct Case {
+            state: Arc<State>,
+            want: Option<msg::DownstreamChunkAck>,
+        }
+        impl Case {
+            async fn test(&self) {
+                let mut mock = wire::MockMockConnection::new();
+                if let Some(want) = self.want.clone() {
+                    mock.expect_downstream_chunk_ack()
+                        .return_once(move |got_ack| {
+                            assert_eq!(got_ack, want);
+                            Ok(())
+                        });
+                }
+
+                let mut down = new_downstream_with_wire_conn(mock);
+                down.state = self.state.clone();
+                down.send_ack().await.unwrap();
+                assert!(down.state.ack_buf.lock().unwrap().is_empty());
+            }
+        }
+        let cases = vec![
+            Case {
+                state: Arc::new(State {
+                    stream_id_alias: 1,
+                    ack_buf: Mutex::new(vec![msg::DownstreamChunkResult {
+                        stream_id_of_upstream: Uuid::parse_str(
+                            "11111111-1111-1111-1111-111111111111",
+                        )
+                        .unwrap(),
+                        sequence_number_in_upstream: 100,
+                        result_code: msg::ResultCode::Succeeded,
+                        result_string: "OK".to_string(),
+                    }]),
+                    ..Default::default()
+                }),
+                want: Some(msg::DownstreamChunkAck {
+                    stream_id_alias: 1,
+                    results: vec![msg::DownstreamChunkResult {
+                        stream_id_of_upstream: Uuid::parse_str(
+                            "11111111-1111-1111-1111-111111111111",
+                        )
+                        .unwrap(),
+                        sequence_number_in_upstream: 100,
+                        result_code: msg::ResultCode::Succeeded,
+                        result_string: "OK".to_string(),
+                    }],
+                    ..Default::default()
+                }),
+            },
+            Case {
+                state: Arc::default(),
+                want: None,
+            },
+        ];
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        for case in cases.into_iter() {
+            rt.block_on(async { case.test().await });
+        }
+    }
+
+    #[test]
+    fn receive_invalid_alias() {
+        struct Case {
+            input: msg::DownstreamChunk,
+            want_disconnect: bool,
+        }
+        impl Case {
+            async fn test(&self) {
+                let mut mock = wire::MockMockConnection::new();
+                if self.want_disconnect {
+                    mock.expect_disconnect().return_once(|_| Ok(()));
+                }
+                let (_notify, r) = broadcast::channel(1);
+
+                mock.expect_subscribe_disconnect_notify()
+                    .return_once(|| DisconnectNotificationReceiver::new(r));
+
+                let (sender, data_points_subscriber) = mpsc::channel(1);
+                let (_meta_sender, metadata_subscriber) = broadcast::channel(1);
+                let down = Downstream::new(
+                    Arc::new(mock),
+                    Arc::new(DownstreamConfig {
+                        qos: QoS::Unreliable,
+                        ..Default::default()
+                    }),
+                    HashMap::default(),
+                    DownstreamParam {
+                        stream_id: Uuid::nil(),
+                        stream_id_alias: 1,
+                        data_points_subscriber,
+                        metadata_subscriber,
+                        source_node_ids: vec![],
+                        repository: Arc::new(super::super::InMemStreamRepository::new()),
+                        server_time: <Utc as chrono::TimeZone>::timestamp_opt(
+                            &Utc,
+                            123_456_789,
+                            123_456_789,
+                        )
+                        .unwrap(),
+                    },
+                );
+
+                let down_c = down.clone();
+                tokio::spawn(async move { down_c.read_data_points().await });
+                sender.send(self.input.clone().into()).await.unwrap();
+            }
+        }
+        let cases = vec![
+            Case {
+                input: msg::DownstreamChunk {
+                    upstream_or_alias: 100.into(),
+                    ..Default::default()
+                },
+                want_disconnect: true,
+            },
+            Case {
+                input: msg::DownstreamChunk {
+                    upstream_or_alias: msg::UpstreamInfo::default().into(),
+                    stream_chunk: msg::StreamChunk {
+                        sequence_number: 1,
+                        data_point_groups: vec![msg::DataPointGroup {
+                            data_points: vec![],
+                            data_id_or_alias: 100.into(),
+                        }],
+                    },
+                    ..Default::default()
+                },
+                want_disconnect: true,
+            },
+            Case {
+                input: msg::DownstreamChunk {
+                    upstream_or_alias: msg::UpstreamInfo::default().into(),
+                    stream_chunk: msg::StreamChunk {
+                        sequence_number: 1,
+                        data_point_groups: vec![msg::DataPointGroup {
+                            data_points: vec![],
+                            data_id_or_alias: msg::DataId::new("name", "type").into(),
+                        }],
+                    },
+                    ..Default::default()
+                },
+                want_disconnect: false,
+            },
+        ];
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        for case in cases.into_iter() {
+            rt.block_on(case.test());
+        }
     }
 }

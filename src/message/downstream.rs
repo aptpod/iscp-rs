@@ -20,6 +20,8 @@ pub struct DownstreamOpenRequest {
     pub data_id_aliases: DataIdAliasMap,
     /// QoS
     pub qos: super::QoS,
+    /// 空チャンク省略フラグ。trueの場合、StreamChunk内のDataPointGroupが空の時、DownstreamChunkの送信を省略します。
+    pub omit_empty_chunk: bool,
 }
 
 impl Default for DownstreamOpenRequest {
@@ -31,6 +33,7 @@ impl Default for DownstreamOpenRequest {
             expiry_interval: chrono::Duration::zero(),
             data_id_aliases: HashMap::new(),
             qos: super::QoS::Unreliable,
+            omit_empty_chunk: false,
         }
     }
 }

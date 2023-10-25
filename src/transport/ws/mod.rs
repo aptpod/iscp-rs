@@ -18,7 +18,6 @@ use tokio::{
     sync::{broadcast, mpsc, oneshot},
 };
 use tokio_tungstenite::{
-    connect_async_with_config,
     tungstenite::{handshake::client::Request, protocol, Message},
     MaybeTlsStream, WebSocketStream,
 };
@@ -57,7 +56,7 @@ impl Conn {
         wsconf: WebSocketConfig,
         send_queue_size: Option<usize>,
     ) -> Result<Self> {
-        let (ws_stream, _) = connect_async_with_config(request, Some(wsconf))
+        let (ws_stream, _) = self::connect_async_with_config(request, Some(wsconf))
             .await
             .map_err(Error::connect)?;
 
@@ -103,6 +102,52 @@ impl Conn {
         Ok(conn)
     }
 }
+
+// connect with TCP_NODELAY option
+async fn connect_async_with_config<R>(
+    request: R,
+    config: Option<WebSocketConfig>,
+) -> Result<
+    (
+        WebSocketStream<MaybeTlsStream<TcpStream>>,
+        tungstenite::handshake::client::Response,
+    ),
+    Error,
+>
+where
+    R: tungstenite::client::IntoClientRequest + Unpin,
+{
+    let request = request.into_client_request()?;
+
+    let domain = if let Some(d) = request.uri().host() {
+        d.to_string()
+    } else {
+        return Err(Error::Connect("no host name".into()));
+    };
+    let port = request
+        .uri()
+        .port_u16()
+        .or_else(|| match request.uri().scheme_str() {
+            Some("wss") => Some(443),
+            Some("ws") => Some(80),
+            _ => None,
+        })
+        .ok_or_else(|| Error::InvalidValue("unsupported url scheme".into()))?;
+
+    let addr = format!("{}:{}", domain, port);
+    let socket = TcpStream::connect(addr)
+        .await
+        .map_err(|e| Error::Connect(e.to_string()))?;
+    // Set TCP_NODELAY option
+    socket
+        .set_nodelay(true)
+        .map_err(|e| Error::Connect(format!("cannot set TCP_NODELAY: {}", e)))?;
+
+    tokio_tungstenite::client_async_tls_with_config(request, socket, config, None)
+        .await
+        .map_err(|e| Error::Connect(e.to_string()))
+}
+
 #[async_trait]
 impl Transport for Conn {
     async fn read(&self) -> Result<Vec<u8>> {

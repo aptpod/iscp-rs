@@ -27,14 +27,14 @@ impl<E: Encoder + ?Sized> Encoder for Box<E> {
 
 /// エンコーディングの形式を表します。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Encoding {
+pub enum EncodingKind {
     /// Protocol Buffers 形式のエンコーディングを表します。
     Proto,
     /// JSON 形式のエンコーディングを表します。
     Json,
 }
 
-impl Encoding {
+impl EncodingKind {
     pub fn new() -> Self {
         Self::default()
     }
@@ -46,7 +46,7 @@ impl Encoding {
     }
 }
 
-impl Default for Encoding {
+impl Default for EncodingKind {
     fn default() -> Self {
         Self::Proto
     }

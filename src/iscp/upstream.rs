@@ -5,7 +5,7 @@ use std::{
     fmt,
     sync::{
         atomic::{AtomicU32, AtomicU64, Ordering},
-        Arc, Mutex,
+        Arc, Mutex, RwLock,
     },
     time::Duration,
 };
@@ -13,69 +13,76 @@ use std::{
 use chrono::{DateTime, Utc};
 use crossbeam::atomic::AtomicCell;
 use log::*;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, watch};
 use uuid::Uuid;
 
 use crate::{
-    msg, wire, Ack, Cancel, DataId, DataPoint, DataPointId, Error, FlushPolicy, IdAliasMap,
-    NopReceiveAckHooker, NopSendDataPointsHooker, QoS, ReceiveAckHooker, Result,
-    SendDataPointsHooker, WaitGroup, Waiter,
+    msg, wire, Cancel, Conn, DataId, DataPointGroup, Error, FlushPolicy, IdAliasMap, QoS, Result,
+    UpstreamChunk, UpstreamChunkResult, WaitGroup, Waiter,
 };
+
+/// Ack受信時のコールバックです。
+/// コールバックの処理時間は短くしてください。処理時間が長くなると他の通信が遅延することがあります。
+pub type ReceiveAckCallback = Arc<dyn Fn(Uuid, UpstreamChunkResult) + Send + Sync + 'static>;
+
+/// データ送信時のコールバックです。
+/// コールバックの処理時間は短くしてください。処理時間が長くなると他の通信が遅延することがあります。
+pub type SendDataPointsCallback = Arc<dyn Fn(Uuid, UpstreamChunk) + Send + Sync + 'static>;
 
 /// アップストリームの設定です。
 #[derive(Clone)]
 pub struct UpstreamConfig {
+    /// セッションID
     pub session_id: String,
+    /// Ackの返却間隔
     pub ack_interval: chrono::Duration,
+    /// 有効期限
     pub expiry_interval: chrono::Duration,
+    /// データIDリスト
     pub data_ids: Vec<DataId>,
+    /// QoS
     pub qos: QoS,
-    pub persist: Option<bool>,
+    /// 永続化
+    pub persist: bool,
+    /// フラッシュポリシー
     pub flush_policy: FlushPolicy,
-    pub recv_ack_hooker: Arc<dyn ReceiveAckHooker>,
-    pub send_data_points_hooker: Arc<dyn SendDataPointsHooker>,
+    /// Close時のタイムアウト
+    pub close_timeout: Option<Duration>,
+    /// Ack受信時のコールバック
+    pub recv_ack_callback: Option<ReceiveAckCallback>,
+    /// データ送信時のコールバック
+    pub send_data_points_callback: Option<SendDataPointsCallback>,
+    /// データ送信時のコールバックのキューサイズ
+    pub callback_queue_size: usize,
 }
 
 impl Default for UpstreamConfig {
     fn default() -> Self {
         Self {
-            session_id: "".to_string(),
+            session_id: String::new(),
             ack_interval: chrono::Duration::milliseconds(100),
             expiry_interval: chrono::Duration::zero(),
             data_ids: Vec::new(),
             qos: QoS::Unreliable,
-            persist: None,
+            persist: false,
             flush_policy: FlushPolicy::default(),
-            recv_ack_hooker: Arc::new(NopReceiveAckHooker),
-            send_data_points_hooker: Arc::new(NopSendDataPointsHooker),
+            close_timeout: None,
+            recv_ack_callback: None,
+            send_data_points_callback: None,
+            callback_queue_size: 10000,
         }
     }
 }
 
-pub type BoxedUpstreamOption = Box<dyn Fn(&mut UpstreamConfig)>;
-
-impl UpstreamConfig {
-    pub fn new_with(session_id: &str, opts: Vec<BoxedUpstreamOption>) -> Self {
-        let mut cfg = UpstreamConfig {
-            session_id: session_id.to_string(),
-            ..Default::default()
-        };
-        for opt in opts.iter() {
-            opt(&mut cfg);
-        }
-        cfg
-    }
-}
-
-impl From<&UpstreamConfig> for msg::UpstreamOpenRequest {
-    fn from(c: &UpstreamConfig) -> Self {
+impl msg::UpstreamOpenRequest {
+    pub(crate) fn from_config(config: &UpstreamConfig) -> Self {
         Self {
-            session_id: c.session_id.clone(),
-            ack_interval: c.ack_interval,
-            expiry_interval: c.expiry_interval,
-            qos: c.qos,
-            data_ids: c.data_ids.clone(),
-            persist: c.persist,
+            session_id: config.session_id.clone(),
+            ack_interval: config.ack_interval,
+            expiry_interval: config.expiry_interval,
+            qos: config.qos,
+            data_ids: config.data_ids.clone(),
+            persist: Some(config.persist),
             ..Default::default()
         }
     }
@@ -89,13 +96,10 @@ pub struct Upstream {
     state: Arc<State>,
     write_state: Arc<WriteState>,
     repository: Arc<dyn super::UpstreamRepository>,
-    close_notify: broadcast::Sender<()>,
+    close_notify: broadcast::Sender<UpstreamClosedEvent>,
     final_ack_received_notify: broadcast::Sender<()>,
-
-    recv_ack_hooker: Arc<dyn ReceiveAckHooker>,
-    send_data_points_hooker: Arc<dyn SendDataPointsHooker>,
-
-    config: UpstreamConfig,
+    callback_channels: Arc<CallbackChannels>,
+    config: Arc<UpstreamConfig>,
 }
 
 impl fmt::Debug for Upstream {
@@ -115,6 +119,29 @@ impl fmt::Debug for Upstream {
     }
 }
 
+/// アップストリームの状態です。
+#[derive(Clone, Debug)]
+pub struct UpstreamState {
+    /// データIDとエイリアスのマップ
+    pub data_id_aliases: HashMap<u32, DataId>,
+    /// 総送信データポイント数
+    pub total_data_points: u64,
+    /// 最後に払い出されたシーケンス番号
+    pub last_issued_sequence_number: u32,
+    /// 内部に保存しているデータポイントバッファ
+    pub data_points_buffer: Vec<DataPointGroup>,
+}
+
+/// アップストリームのクローズイベントです。
+#[derive(Clone)]
+pub struct UpstreamClosedEvent {
+    pub session_id: String,
+    pub config: Arc<UpstreamConfig>,
+    pub state: UpstreamState,
+    pub caused_by: Option<Error>,
+    pub error: Option<Error>,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ConnectionState {
     Open,
@@ -128,7 +155,7 @@ impl Default for ConnectionState {
     }
 }
 
-/// UpstreamStateは、アップストリーム情報です。
+/// 内部的なアップストリームの状態
 #[derive(Default, Debug)]
 struct State {
     /// ストリームID
@@ -138,11 +165,11 @@ struct State {
     id_alias_map: Mutex<IdAliasMap>,
     conn: AtomicCell<ConnectionState>,
 
-    // TODO: add 総送信データポイント数
-    // TODO: add 最後に払い出されたシーケンス番号
-    // TODO: add 受信したUpstreamChunkResult内での最大シーケンス番号
     /// UpstreamOpenResponseで返却されたサーバー時刻
     server_time: DateTime<Utc>,
+
+    close_caused_by: Mutex<Option<Error>>,
+    error_in_flush: Mutex<Option<Error>>,
 }
 
 impl State {
@@ -171,8 +198,9 @@ struct WriteState {
     flush_policy: FlushPolicy,
     sequence_number: AtomicU32,
     data_point_count: AtomicU64,
-    buf: Mutex<Vec<DataPoint>>,
+    buf: Mutex<Vec<DataPointGroup>>,
     buffered_payload_len: AtomicU64,
+    buf_on_err: Mutex<Vec<DataPointGroup>>,
     sent_storage: Arc<dyn super::SentStorage>,
 }
 
@@ -184,25 +212,37 @@ impl Default for WriteState {
             data_point_count: AtomicU64::new(0),
             buf: Mutex::new(Vec::with_capacity(1024)),
             buffered_payload_len: AtomicU64::new(0),
+            buf_on_err: Mutex::new(Vec::with_capacity(1024)),
             sent_storage: Arc::new(super::InMemSentStorageNoPayload::default()),
         }
     }
 }
 
 impl WriteState {
-    fn push_data_point(&self, dp: DataPoint) -> Result<()> {
+    fn push_data_points(&self, dpg: DataPointGroup) -> Result<()> {
         let mut buf = self.buf.lock().unwrap();
-        self.check_sequence_number_overflow()?;
+        if let Err(e) = self.check_sequence_number_overflow() {
+            self.buf_on_err.lock().unwrap().push(dpg);
+            return Err(e);
+        }
 
-        self.buffered_payload_len
-            .fetch_add(dp.payload.len() as u64, Ordering::Release);
-        buf.push(dp);
-        self.add_data_point_count(1)?;
+        for dp in &dpg.data_points {
+            self.buffered_payload_len
+                .fetch_add(dp.payload.len() as u64, Ordering::Relaxed);
+        }
+
+        if let Err(e) = self.add_data_point_count(dpg.data_points.len() as u64) {
+            self.buf_on_err.lock().unwrap().push(dpg);
+            return Err(e);
+        }
+        buf.push(dpg);
         Ok(())
     }
+
     fn next_sequence_number(&self) -> u32 {
         self.sequence_number.fetch_add(1, Ordering::Release)
     }
+
     fn add_data_point_count(&self, count: u64) -> Result<u64> {
         let old = self.data_point_count.fetch_add(count, Ordering::Release);
         if old == u64::MAX {
@@ -210,6 +250,7 @@ impl WriteState {
         }
         Ok(old + 1)
     }
+
     fn latest_used_sequence_number(&self) -> u32 {
         let s = self.sequence_number.load(Ordering::Acquire);
         if s == 0 {
@@ -218,12 +259,14 @@ impl WriteState {
             s - 1
         }
     }
+
     fn check_sequence_number_overflow(&self) -> Result<()> {
         if u32::MAX == self.sequence_number.load(Ordering::Acquire) {
             return Err(Error::MaxSequenceNumber);
         }
         Ok(())
     }
+
     fn data_point_count(&self) -> u64 {
         self.data_point_count.load(Ordering::Acquire)
     }
@@ -232,12 +275,20 @@ impl WriteState {
         self.buffered_payload_len.load(Ordering::Acquire)
     }
 
-    fn take_buffered_data_points(&self) -> Vec<DataPoint> {
+    fn take_buffered_data_points(&self) -> Vec<DataPointGroup> {
         let mut buf = self.buf.lock().unwrap();
         self.buffered_payload_len.store(0, Ordering::Release);
 
         std::mem::take(buf.as_mut())
     }
+}
+
+#[derive(Default)]
+struct CallbackChannels {
+    tx_recv_ack_callback: Option<RwLock<Option<mpsc::Sender<UpstreamChunkResult>>>>,
+    tx_send_data_points_callback: Option<RwLock<Option<mpsc::Sender<UpstreamChunk>>>>,
+    rx_recv_ack_callback_closed: Option<watch::Receiver<bool>>,
+    rx_send_data_points_callback_closed: Option<watch::Receiver<bool>>,
 }
 
 pub(super) struct UpstreamParam {
@@ -251,7 +302,7 @@ pub(super) struct UpstreamParam {
 impl Upstream {
     pub(super) fn new(
         conn: Arc<dyn wire::Connection>,
-        config: UpstreamConfig,
+        config: Arc<UpstreamConfig>,
         param: UpstreamParam,
     ) -> Result<Self> {
         // validate
@@ -261,11 +312,18 @@ impl Upstream {
 
         let (close_notify, _) = broadcast::channel(1);
         let (final_ack_received_notify, _) = broadcast::channel(1);
+        let callback_channels = CallbackChannels::new(
+            config.recv_ack_callback.clone(),
+            config.send_data_points_callback.clone(),
+            param.stream_id,
+            config.callback_queue_size,
+        );
 
         let up = Self {
             cancel: Cancel::new(),
             close_notify,
             final_ack_received_notify,
+            callback_channels: Arc::new(callback_channels),
             conn,
             repository: param.repository,
             state: Arc::new(State {
@@ -274,14 +332,14 @@ impl Upstream {
                 id_alias_map: Mutex::new(IdAliasMap::new()),
                 conn: AtomicCell::new(ConnectionState::Open),
                 server_time: param.server_time,
+                close_caused_by: Mutex::default(),
+                error_in_flush: Mutex::default(),
             }),
             write_state: Arc::new(WriteState {
                 flush_policy: config.flush_policy,
                 sent_storage: param.sent_strage,
                 ..Default::default()
             }),
-            recv_ack_hooker: config.recv_ack_hooker.clone(),
-            send_data_points_hooker: config.send_data_points_hooker.clone(),
             config,
         };
 
@@ -303,30 +361,53 @@ impl Upstream {
         Ok(up)
     }
 
-    pub(crate) fn stream_id(&self) -> uuid::Uuid {
-        self.state.stream_id
+    /// アップストリームを閉じます。
+    pub async fn close(&self, options: Option<UpstreamCloseOptions>) -> Result<()> {
+        self.state.check_open()?;
+        self.async_flush().await?;
+        self.close_without_flush(options).await
     }
 
-    /// アップストリームを閉じます。
-    pub async fn close(
-        &self,
-        opts: Option<UpstreamCloseOptions>,
-        final_ack_wait_timeout: Option<Duration>,
-    ) -> Result<()> {
-        self.state.check_open()?;
+    async fn close_without_flush(&self, opts: Option<UpstreamCloseOptions>) -> Result<()> {
+        let result = if let Err(e) = self.close_without_flush_inner(opts).await {
+            *self.state.error_in_flush.lock().unwrap() = Some(e.clone());
+            Err(e)
+        } else {
+            Ok(())
+        };
+        if let Some(tx) = &self.callback_channels.tx_recv_ack_callback {
+            *tx.write().unwrap() = None;
+        }
+        if let Some(tx) = &self.callback_channels.tx_send_data_points_callback {
+            *tx.write().unwrap() = None;
+        }
+        if let Some(mut rx) = self.callback_channels.rx_recv_ack_callback_closed.clone() {
+            if !*rx.borrow_and_update() {
+                log_err!(warn, rx.changed().await);
+            }
+        }
+        if let Some(mut rx) = self
+            .callback_channels
+            .rx_send_data_points_callback_closed
+            .clone()
+        {
+            if !*rx.borrow_and_update() {
+                log_err!(warn, rx.changed().await);
+            }
+        }
+        result
+    }
 
+    async fn close_without_flush_inner(&self, opts: Option<UpstreamCloseOptions>) -> Result<()> {
         debug!(
             "close upstream: alias = {}, stream_id = {}",
             self.state.stream_id_alias, self.state.stream_id
         );
-
-        self.async_flush().await?;
-
         let mut close_notified = self.close_notify.subscribe();
         let mut final_ack_received_notified = self.final_ack_received_notify.subscribe();
         self.state.conn.store(ConnectionState::Closing);
 
-        if let Some(d) = final_ack_wait_timeout {
+        if let Some(d) = self.config.close_timeout {
             if !self.is_final_ack_received() {
                 match tokio::time::timeout(d, final_ack_received_notified.recv()).await {
                     Ok(_) => debug!("final ack received"),
@@ -373,11 +454,17 @@ impl Upstream {
     }
 
     /// データポイントを内部バッファに書き込みます。
-    pub async fn write_data_point(&self, d: DataPoint) -> Result<()> {
-        self.write_state.push_data_point(d)?;
+    pub async fn write_data_points(&self, dpg: DataPointGroup) -> Result<()> {
+        if let Err(e) = self.write_state.push_data_points(dpg) {
+            *self.state.close_caused_by.lock().unwrap() = Some(e.clone());
+            if self.state.check_open().is_ok() {
+                self.close_without_flush(None).await?;
+            }
+            return Err(e);
+        }
 
         if let Err(e) = self.state.check_open() {
-            let _ = self.process_data_points()?;
+            let _ = self.process_data_points().await?;
             return Err(e);
         }
 
@@ -413,50 +500,110 @@ impl Upstream {
         self.async_flush().await
     }
 
-    /// アップストリームの生成に使用したパラメーターを返します。
-    pub fn to_config(&self) -> UpstreamConfig {
+    /// アップストリームの設定を返します。
+    pub fn config(&self) -> Arc<UpstreamConfig> {
         self.config.clone()
     }
 
+    /// アップストリームの状態を取得します。
+    pub fn state(&self) -> UpstreamState {
+        let data_id_aliases = self
+            .state
+            .id_alias_map
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(id, i)| (*i, id.clone()))
+            .collect();
+        let total_data_points = self.write_state.data_point_count();
+        let last_issued_sequence_number = self.write_state.latest_used_sequence_number();
+        let data_points_buffer_on_error = self.write_state.buf_on_err.lock().unwrap().clone();
+        let mut data_points_buffer = self.write_state.buf.lock().unwrap().clone();
+        data_points_buffer.extend(data_points_buffer_on_error);
+
+        UpstreamState {
+            data_id_aliases,
+            total_data_points,
+            last_issued_sequence_number,
+            data_points_buffer,
+        }
+    }
+
+    /// ストリームIDを取得します
+    pub fn stream_id(&self) -> uuid::Uuid {
+        self.state.stream_id
+    }
+
+    /// UpstreamOpenResponseで返却されたサーバー時刻を取得します
+    pub fn server_time(&self) -> DateTime<Utc> {
+        self.state.server_time
+    }
+
     async fn async_flush(&self) -> Result<()> {
-        let upstream_chunk_msg = self.process_data_points()?;
+        let upstream_chunk_msg = match self.process_data_points().await {
+            Ok(upstream_chunk_msg) => upstream_chunk_msg,
+            Err(e) => {
+                *self.state.close_caused_by.lock().unwrap() = Some(e.clone());
+                if self.state.check_open().is_ok() {
+                    self.close_without_flush(None).await?;
+                }
+                return Err(e);
+            }
+        };
 
         self.state.check_not_closed()?;
 
         if let Some(upstream_chunk_msg) = upstream_chunk_msg {
-            self.conn.upstream_chunk(upstream_chunk_msg).await?;
+            if let Err(e) = self.conn.upstream_chunk(upstream_chunk_msg).await {
+                *self.state.close_caused_by.lock().unwrap() = Some(e.clone());
+                if self.state.check_open().is_ok() {
+                    self.close_without_flush(None).await?;
+                }
+                return Err(e);
+            }
         }
 
         Ok(())
     }
 
     /// Process data points in the buffer and send to a storage
-    fn process_data_points(&self) -> Result<Option<msg::UpstreamChunk>> {
+    async fn process_data_points(&self) -> Result<Option<msg::UpstreamChunk>> {
         let mut data_ids = Vec::new();
 
-        let dps = self.write_state.take_buffered_data_points();
-        let id_alias_map = self.state.id_alias_map.lock().unwrap();
-        if dps.is_empty() {
+        let dpgs = self.write_state.take_buffered_data_points();
+
+        if dpgs.is_empty() {
             return Ok(None);
         }
-        let data_points = dps.clone();
-        let dps_to_hooker = dps.clone();
+        let dpgs_to_callback = dpgs.clone();
         let sequence_number = self.write_state.next_sequence_number();
 
-        // flush hooker
-        self.send_data_points_hooker.hook_before_send_data_points(
-            self.stream_id(),
-            sequence_number,
-            dps_to_hooker,
-        );
+        // flush callback
+        let tx = if let Some(tx) = &self.callback_channels.tx_send_data_points_callback {
+            tx.read().unwrap().as_ref().cloned()
+        } else {
+            None
+        };
+        if let Some(tx) = tx {
+            let upstream_chunk = UpstreamChunk {
+                sequence_number,
+                data_point_groups: dpgs_to_callback.clone(),
+            };
+            log_err!(warn, tx.send(upstream_chunk).await);
+        }
+
+        let id_alias_map = self.state.id_alias_map.lock().unwrap();
 
         let mut point_map = HashMap::new();
-        for p in dps.into_iter() {
-            let g = point_map.entry(p.id).or_insert_with(Vec::new);
-            g.push(msg::DataPoint {
-                payload: p.payload,
-                elapsed_time: p.elapsed_time.num_nanoseconds().unwrap_or(0),
-            });
+        for dpg in dpgs.into_iter() {
+            //let id = dpg.id;
+            for p in dpg.data_points.into_iter() {
+                let g = point_map.entry(dpg.id.clone()).or_insert_with(Vec::new);
+                g.push(msg::DataPoint {
+                    payload: p.payload,
+                    elapsed_time: p.elapsed_time.num_nanoseconds().unwrap_or(0),
+                });
+            }
         }
 
         let data_point_groups = point_map
@@ -478,9 +625,11 @@ impl Upstream {
             })
             .collect::<Vec<_>>();
 
-        self.write_state
-            .sent_storage
-            .save(self.state.stream_id, sequence_number, data_points)?;
+        self.write_state.sent_storage.store(
+            self.state.stream_id,
+            sequence_number,
+            dpgs_to_callback,
+        )?;
 
         let stream_chunk = msg::StreamChunk {
             sequence_number,
@@ -494,7 +643,15 @@ impl Upstream {
         }))
     }
 
-    fn results_to_acks(&self, results: Vec<msg::UpstreamChunkResult>) -> Vec<(Ack, u32)> {
+    /// アップストリームのクローズをサブスクライブします。
+    pub fn subscribe_close(&self) -> UpstreamClosedNotificationReceiver {
+        UpstreamClosedNotificationReceiver(self.close_notify.subscribe())
+    }
+
+    fn process_chunk_results(
+        &self,
+        results: Vec<msg::UpstreamChunkResult>,
+    ) -> Vec<UpstreamChunkResult> {
         results
             .into_iter()
             .map(|res| {
@@ -508,26 +665,14 @@ impl Upstream {
                 )
             })
             .filter(|(_, _, sent, _)| sent.is_some())
-            .map(|(result_code, result_string, sent, seq)| {
-                (
-                    Ack {
-                        result_code,
-                        result_string,
-                        data_point_ids: sent
-                            .map(|dps| {
-                                dps.into_iter()
-                                    .map(|dp| DataPointId {
-                                        id: dp.id,
-                                        elapsed_time: dp.elapsed_time,
-                                    })
-                                    .collect::<Vec<_>>()
-                            })
-                            .unwrap(),
-                    },
-                    seq,
-                )
-            })
-            .collect::<Vec<(_, _)>>()
+            .map(
+                |(result_code, result_string, _, sequence_number)| UpstreamChunkResult {
+                    sequence_number,
+                    result_code,
+                    result_string,
+                },
+            )
+            .collect()
     }
 
     fn update_data_id_alias(&self, alias: HashMap<u32, DataId>) {
@@ -543,17 +688,23 @@ impl Upstream {
 
     async fn read_result_loop(&self, mut recv: mpsc::Receiver<Vec<msg::UpstreamChunkResult>>) {
         while let Some(results) = recv.recv().await {
-            let acks = self.results_to_acks(results);
-            if acks.is_empty() {
+            let chunk_results = self.process_chunk_results(results);
+            if chunk_results.is_empty() {
                 continue;
             }
             if self.is_final_ack_received() {
                 log_err!(debug, self.final_ack_received_notify.send(()));
             }
-            acks.iter().for_each(|(ack, seq)| {
-                self.recv_ack_hooker
-                    .hook_after_recv_ack(self.stream_id(), *seq, ack.clone());
-            });
+            let tx = if let Some(tx) = &self.callback_channels.tx_recv_ack_callback {
+                tx.read().unwrap().as_ref().cloned()
+            } else {
+                None
+            };
+            if let Some(tx) = tx {
+                for chunk_result in chunk_results.into_iter() {
+                    log_err!(warn, tx.send(chunk_result).await);
+                }
+            }
         }
     }
 
@@ -589,8 +740,9 @@ impl Upstream {
         }
         Ok(())
     }
+
     async fn close_waiter(&self, mut waiter: Waiter) {
-        let mut conn_close_notified = self.conn.subscribe_close_notify();
+        let mut conn_close_notified = self.conn.subscribe_disconnect_notify();
 
         tokio::select! {
             _ = waiter.wait() => {},
@@ -599,7 +751,16 @@ impl Upstream {
 
         self.state.conn.store(ConnectionState::Closed);
         log_err!(error, self.repository.save_upstream(&self.info()));
-        log_err!(trace, self.close_notify.send(()));
+        log_err!(
+            trace,
+            self.close_notify.send(UpstreamClosedEvent {
+                session_id: self.config.session_id.clone(),
+                config: self.config.clone(),
+                state: self.state(),
+                caused_by: self.state.close_caused_by.lock().unwrap().clone(),
+                error: self.state.error_in_flush.lock().unwrap().clone(),
+            })
+        );
         trace!("exit close waiter");
     }
 
@@ -645,6 +806,51 @@ impl Upstream {
     }
 }
 
+impl CallbackChannels {
+    fn new(
+        recv_ack_callback: Option<ReceiveAckCallback>,
+        send_data_points_callback: Option<SendDataPointsCallback>,
+        stream_id: Uuid,
+        callback_queue_size: usize,
+    ) -> Self {
+        let (tx_recv_ack_callback, rx_recv_ack_callback_closed) =
+            if let Some(callback) = recv_ack_callback {
+                let (tx, mut rx) = mpsc::channel(callback_queue_size);
+                let (tx_closed, rx_closed) = watch::channel(false);
+                std::thread::spawn(move || {
+                    while let Some(chunk_result) = rx.blocking_recv() {
+                        callback(stream_id, chunk_result);
+                    }
+                    log_err!(warn, tx_closed.send(true));
+                });
+                (Some(RwLock::new(Some(tx))), Some(rx_closed))
+            } else {
+                (None, None)
+            };
+        let (tx_send_data_points_callback, rx_send_data_points_callback_closed) =
+            if let Some(callback) = send_data_points_callback {
+                let (tx, mut rx) = mpsc::channel(callback_queue_size);
+                let (tx_closed, rx_closed) = watch::channel(false);
+                std::thread::spawn(move || {
+                    while let Some(upstream_chunk) = rx.blocking_recv() {
+                        callback(stream_id, upstream_chunk);
+                    }
+                    log_err!(warn, tx_closed.send(true));
+                });
+                (Some(RwLock::new(Some(tx))), Some(rx_closed))
+            } else {
+                (None, None)
+            };
+
+        CallbackChannels {
+            tx_recv_ack_callback,
+            tx_send_data_points_callback,
+            rx_recv_ack_callback_closed,
+            rx_send_data_points_callback_closed,
+        }
+    }
+}
+
 /// Upstreamクローズ時のオプションです。
 #[derive(Default)]
 pub struct UpstreamCloseOptions {
@@ -660,35 +866,122 @@ impl From<UpstreamCloseOptions> for msg::UpstreamCloseRequestExtensionFields {
     }
 }
 
+/// アップストリームのクローズイベントを受け取るレシーバーです。
+#[derive(Debug)]
+pub struct UpstreamClosedNotificationReceiver(broadcast::Receiver<UpstreamClosedEvent>);
+
+impl UpstreamClosedNotificationReceiver {
+    pub async fn recv(&mut self) -> Option<UpstreamClosedEvent> {
+        self.0.recv().await.ok()
+    }
+}
+
+/// アップストリームのビルダーです。
+pub struct UpstreamBuilder<'a> {
+    pub(crate) conn: &'a Conn,
+    pub(crate) config: UpstreamConfig,
+}
+
+impl<'a> UpstreamBuilder<'a> {
+    /// アップストリームのオープン
+    pub async fn build(self) -> Result<Upstream> {
+        self.conn.open_upstream(self.config).await
+    }
+
+    /// Ackの返却間隔
+    pub fn ack_interval(mut self, ack_interval: chrono::Duration) -> Self {
+        self.config.ack_interval = ack_interval;
+        self
+    }
+
+    /// 有効期限
+    pub fn expiry_interval(mut self, expiry_interval: chrono::Duration) -> Self {
+        self.config.expiry_interval = expiry_interval;
+        self
+    }
+
+    /// データIDリスト
+    pub fn data_ids(mut self, data_ids: Vec<DataId>) -> Self {
+        self.config.data_ids = data_ids;
+        self
+    }
+
+    /// QoS
+    pub fn qos(mut self, qos: QoS) -> Self {
+        self.config.qos = qos;
+        self
+    }
+
+    /// 永続化
+    pub fn persist(mut self, persist: bool) -> Self {
+        self.config.persist = persist;
+        self
+    }
+
+    /// フラッシュポリシー
+    pub fn flush_policy(mut self, flush_policy: FlushPolicy) -> Self {
+        self.config.flush_policy = flush_policy;
+        self
+    }
+
+    /// Close時のタイムアウト
+    pub fn close_timeout(mut self, close_timeout: Option<Duration>) -> Self {
+        self.config.close_timeout = close_timeout;
+        self
+    }
+
+    /// Ack受信時のコールバック
+    pub fn recv_ack_callback(mut self, recv_ack_callback: Option<ReceiveAckCallback>) -> Self {
+        self.config.recv_ack_callback = recv_ack_callback;
+        self
+    }
+
+    /// データ送信時のコールバック
+    pub fn send_data_points_callback(
+        mut self,
+        send_data_points_callback: Option<SendDataPointsCallback>,
+    ) -> Self {
+        self.config.send_data_points_callback = send_data_points_callback;
+        self
+    }
+
+    /// データ送信時のコールバックのキューサイズ
+    pub fn callback_queue_size(mut self, callback_queue_size: usize) -> Self {
+        self.config.callback_queue_size = callback_queue_size;
+        self
+    }
+}
+
 #[cfg(test)]
 mod test {
 
     use chrono::TimeZone;
     use std::sync::atomic::AtomicBool;
 
-    use crate::{
-        iscp::test::new_mock_conn, sync::Cancel, up_opts, wire, Conn, NopReceiveAckHooker,
-        NopSendDataPointsHooker, TokenSource, UpstreamConfig,
-    };
+    use crate::{iscp::test::new_mock_conn, sync::Cancel, wire, Conn, DataPoint, UpstreamConfig};
 
     use super::*;
 
-    fn new_upstream<T>(
-        conn: &Conn<T>,
-        recv_ack_hooker: Arc<dyn ReceiveAckHooker>,
-        send_data_points_hooker: Arc<dyn SendDataPointsHooker>,
-    ) -> Upstream
-    where
-        T: TokenSource + Clone,
-    {
+    fn new_upstream(
+        conn: &Conn,
+        recv_ack_callback: Option<ReceiveAckCallback>,
+        send_data_points_callback: Option<SendDataPointsCallback>,
+    ) -> Upstream {
         let (close_notify, _) = broadcast::channel(1);
         let (final_ack_received_notify, _) = broadcast::channel(1);
+        let stream_id = uuid::Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap();
+        let callback_channels = CallbackChannels::new(
+            recv_ack_callback.clone(),
+            send_data_points_callback.clone(),
+            stream_id,
+            0xFF,
+        );
         Upstream {
             conn: conn.wire_conn.clone(),
             state: Arc::new(State {
-                stream_id: uuid::Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap(),
+                stream_id,
                 stream_id_alias: 1,
-                server_time: Utc.timestamp(123_456_789, 123_456_789),
+                server_time: Utc.timestamp_opt(123_456_789, 123_456_789).unwrap(),
                 ..Default::default()
             }),
             repository: conn.upstream_repository.clone(),
@@ -698,37 +991,37 @@ mod test {
             }),
             close_notify,
             final_ack_received_notify,
+            callback_channels: Arc::new(callback_channels),
             cancel: Cancel::new(),
-            recv_ack_hooker,
-            send_data_points_hooker,
-            config: UpstreamConfig {
-                session_id: "session".to_string(),
+            config: Arc::new(UpstreamConfig {
+                session_id: "session".into(),
+                recv_ack_callback,
+                send_data_points_callback,
                 ..Default::default()
-            },
+            }),
         }
     }
 
-    fn new_upstream_with_write_state<T>(conn: Conn<T>, write_state: WriteState) -> Upstream
-    where
-        T: TokenSource + Clone,
-    {
+    fn new_upstream_with_write_state(conn: Conn, write_state: WriteState) -> Upstream {
         let (close_notify, _) = broadcast::channel(1);
         let (final_ack_received_notify, _) = broadcast::channel(1);
         Upstream {
             conn: conn.wire_conn.clone(),
             state: Arc::new(State {
                 stream_id_alias: 1,
-                server_time: Utc.timestamp(123_456_789, 123_456_789),
+                server_time: Utc.timestamp_opt(123_456_789, 123_456_789).unwrap(),
                 ..Default::default()
             }),
             write_state: Arc::new(write_state),
             close_notify,
             final_ack_received_notify,
+            callback_channels: Arc::default(),
             cancel: Cancel::new(),
             repository: conn.upstream_repository.clone(),
-            recv_ack_hooker: UpstreamConfig::default().recv_ack_hooker,
-            send_data_points_hooker: UpstreamConfig::default().send_data_points_hooker,
-            config: UpstreamConfig::default(),
+            config: Arc::new(UpstreamConfig {
+                session_id: "session".into(),
+                ..Default::default()
+            }),
         }
     }
 
@@ -745,40 +1038,38 @@ mod test {
         });
 
         #[derive(Default)]
-        struct FlushHooker {
+        struct FlushCallback {
             called: AtomicBool,
         }
-        impl SendDataPointsHooker for FlushHooker {
-            fn hook_before_send_data_points(
-                &self,
-                sid: uuid::Uuid,
-                sequence: u32,
-                dps: Vec<DataPoint>,
-            ) {
+        impl FlushCallback {
+            fn callback(&self, sid: uuid::Uuid, chunk: UpstreamChunk) {
                 let stream_id =
                     uuid::Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap();
                 assert_eq!(sid, stream_id);
-                assert_eq!(sequence, 1);
-                assert_eq!(dps.len(), 10);
+                assert_eq!(chunk.sequence_number, 1);
+                assert_eq!(chunk.data_point_groups.len(), 10);
                 self.called.store(true, Ordering::Release);
             }
         }
-        impl Drop for FlushHooker {
+        impl Drop for FlushCallback {
             fn drop(&mut self) {
                 assert!(self.called.load(Ordering::Acquire))
             }
         }
 
         let mock_conn = new_mock_conn("test", mock);
+        let flush_callback = FlushCallback::default();
         let up = new_upstream(
             &mock_conn,
-            Arc::new(NopReceiveAckHooker),
-            Arc::new(FlushHooker::default()),
+            None,
+            Some(Arc::new(move |sid, chunk| {
+                flush_callback.callback(sid, chunk);
+            })),
         );
 
         let test_id = msg::DataId {
             name: "1".to_string(),
-            r#type: "1".to_string(),
+            type_: "1".to_string(),
         };
 
         up.state
@@ -788,14 +1079,19 @@ mod test {
             .insert(test_id.clone(), 1);
 
         for i in 0..10 {
-            up.write_data_point(DataPoint {
+            up.write_data_points(DataPointGroup {
                 id: test_id.clone(),
-                elapsed_time: chrono::Duration::seconds(i),
-                payload: vec![1, 2, 3, 4],
+                data_points: vec![DataPoint {
+                    elapsed_time: chrono::Duration::seconds(i),
+                    payload: vec![1, 2, 3, 4].into(),
+                }],
             })
             .await
             .unwrap();
         }
+
+        let state = up.state();
+        assert_eq!(state.data_points_buffer.len(), 10);
 
         up.async_flush().await.unwrap();
         assert_eq!(up.write_state.sequence_number.load(Ordering::Acquire), 2);
@@ -805,6 +1101,10 @@ mod test {
         up.async_flush().await.unwrap();
         assert_eq!(up.write_state.sequence_number.load(Ordering::Acquire), 2);
         assert_eq!(up.write_state.data_point_count.load(Ordering::Acquire), 10);
+
+        let state = up.state();
+        assert_eq!(state.total_data_points, 10);
+        assert!(state.data_points_buffer.is_empty());
     }
 
     #[tokio::test]
@@ -823,10 +1123,12 @@ mod test {
         let test_id = msg::DataId::new("1", "1");
         // fill buffer
         for i in 0..10 {
-            up.write_data_point(DataPoint {
+            up.write_data_points(DataPointGroup {
                 id: test_id.clone(),
-                elapsed_time: chrono::Duration::seconds(i),
-                payload: vec![1, 2, 3, 4],
+                data_points: vec![DataPoint {
+                    elapsed_time: chrono::Duration::seconds(i),
+                    payload: vec![1, 2, 3, 4].into(),
+                }],
             })
             .await
             .unwrap();
@@ -839,10 +1141,12 @@ mod test {
         up.write_state
             .data_point_count
             .store(u64::MAX - 1, Ordering::Release);
-        up.write_data_point(DataPoint {
+        up.write_data_points(DataPointGroup {
             id: test_id.clone(),
-            elapsed_time: chrono::Duration::seconds(1),
-            payload: vec![1, 2, 3, 4],
+            data_points: vec![DataPoint {
+                elapsed_time: chrono::Duration::seconds(1),
+                payload: vec![1, 2, 3, 4].into(),
+            }],
         })
         .await
         .unwrap();
@@ -855,33 +1159,109 @@ mod test {
     }
 
     #[tokio::test]
-    async fn send_overflow() {
+    async fn send_data_data_point_count_overflow() {
         let mut mock = wire::MockMockConnection::new();
-        mock.expect_upstream_chunk().return_once(|_| Ok(()));
+        mock.expect_upstream_open_request().return_once(|_| {
+            Ok(msg::UpstreamOpenResponse {
+                result_code: msg::ResultCode::Succeeded,
+                assigned_stream_id_alias: 1,
+                ..Default::default()
+            })
+        });
+        mock.expect_subscribe_upstream().return_once(|_| {
+            let (_, r) = mpsc::channel(1);
+            Ok(r)
+        });
+        mock.expect_unsubscribe_upstream().returning(|_| Ok(()));
+        mock.expect_upstream_close_request().return_once(|_| {
+            Ok(msg::UpstreamCloseResponse {
+                result_code: msg::ResultCode::Succeeded,
+                ..Default::default()
+            })
+        });
 
         let mock_conn = new_mock_conn("test", mock);
 
-        let test_data_point = DataPoint {
-            id: msg::DataId::new("1", "1"),
-            elapsed_time: chrono::Duration::zero(),
-            payload: vec![1, 2, 3, 4],
-        };
+        let up = mock_conn
+            .upstream_builder("test")
+            .flush_policy(FlushPolicy::IntervalOnly {
+                interval: Duration::from_millis(10),
+            })
+            .ack_interval(chrono::Duration::milliseconds(10))
+            .close_timeout(Some(std::time::Duration::from_secs(1)))
+            .build()
+            .await
+            .unwrap();
+        let mut close_event = up.subscribe_close();
 
-        let write_state = WriteState {
-            buf: Mutex::new(Vec::with_capacity(10)),
-            ..Default::default()
+        let test_data_point = DataPoint {
+            elapsed_time: chrono::Duration::zero(),
+            payload: vec![1, 2, 3, 4].into(),
         };
-        let up = new_upstream_with_write_state(mock_conn, write_state);
+        let test_data_point_group = DataPointGroup {
+            id: msg::DataId::new("1", "1"),
+            data_points: vec![test_data_point],
+        };
 
         // max data point count
         up.write_state
             .data_point_count
             .store(u64::MAX, Ordering::Release);
         let err = up
-            .write_data_point(test_data_point.clone())
+            .write_data_points(test_data_point_group.clone())
             .await
             .expect_err("want error");
         assert!(matches!(err, Error::MaxDataPointCount));
+
+        let close_event = close_event.recv().await.unwrap();
+        assert_eq!(close_event.caused_by, Some(Error::MaxDataPointCount));
+        assert_eq!(close_event.state.data_points_buffer.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn send_data_serial_number_overflow() {
+        let mut mock = wire::MockMockConnection::new();
+        mock.expect_upstream_open_request().return_once(|_| {
+            Ok(msg::UpstreamOpenResponse {
+                result_code: msg::ResultCode::Succeeded,
+                assigned_stream_id_alias: 1,
+                ..Default::default()
+            })
+        });
+        mock.expect_subscribe_upstream().return_once(|_| {
+            let (_, r) = mpsc::channel(1);
+            Ok(r)
+        });
+        mock.expect_unsubscribe_upstream().returning(|_| Ok(()));
+        mock.expect_upstream_close_request().return_once(|_| {
+            Ok(msg::UpstreamCloseResponse {
+                result_code: msg::ResultCode::Succeeded,
+                ..Default::default()
+            })
+        });
+
+        let mock_conn = new_mock_conn("test", mock);
+
+        let up = mock_conn
+            .upstream_builder("test")
+            .flush_policy(FlushPolicy::IntervalOnly {
+                interval: Duration::from_millis(10),
+            })
+            .ack_interval(chrono::Duration::milliseconds(10))
+            .close_timeout(Some(std::time::Duration::from_secs(1)))
+            .build()
+            .await
+            .unwrap();
+        let mut close_event = up.subscribe_close();
+
+        let test_data_point = DataPoint {
+            elapsed_time: chrono::Duration::zero(),
+            payload: vec![1, 2, 3, 4].into(),
+        };
+        let test_data_point_group = DataPointGroup {
+            id: msg::DataId::new("1", "1"),
+            data_points: vec![test_data_point],
+        };
 
         // max serial number
         up.write_state.data_point_count.store(0, Ordering::Release);
@@ -889,10 +1269,14 @@ mod test {
             .sequence_number
             .store(u32::MAX, Ordering::Release);
         let err = up
-            .write_data_point(test_data_point.clone())
+            .write_data_points(test_data_point_group.clone())
             .await
             .expect_err("want error");
         assert!(matches!(err, Error::MaxSequenceNumber));
+
+        let close_event = close_event.recv().await.unwrap();
+        assert_eq!(close_event.caused_by, Some(Error::MaxSequenceNumber));
+        assert_eq!(close_event.state.data_points_buffer.len(), 1);
     }
 
     #[tokio::test]
@@ -903,47 +1287,48 @@ mod test {
             .return_once(move |_| Ok(recv));
         mock.expect_unsubscribe_upstream().return_once(|_| Ok(()));
 
-        let dps = vec![DataPoint {
+        let dpgs = vec![DataPointGroup {
             id: msg::DataId::new("1", "1"),
-            elapsed_time: chrono::Duration::seconds(1),
-            payload: vec![1, 2, 3, 4],
+            data_points: vec![DataPoint {
+                elapsed_time: chrono::Duration::seconds(1),
+                payload: vec![1, 2, 3, 4].into(),
+            }],
         }];
 
-        let ids = dps.iter().map(|dp| dp.data_point_id()).collect::<Vec<_>>();
-        struct RecvAckHooker {
+        struct RecvAckCallback {
             want_sid: uuid::Uuid,
             want_seq: u32,
-            want_ids: Vec<DataPointId>,
             called: AtomicBool,
         }
-        impl ReceiveAckHooker for RecvAckHooker {
-            fn hook_after_recv_ack(&self, sid: uuid::Uuid, sequence: u32, ack: Ack) {
+        impl RecvAckCallback {
+            fn callback(&self, sid: uuid::Uuid, chunk_result: UpstreamChunkResult) {
                 assert_eq!(sid, self.want_sid);
-                assert_eq!(sequence, self.want_seq);
-                assert_eq!(ack.data_point_ids, self.want_ids.clone());
+                assert_eq!(chunk_result.sequence_number, self.want_seq);
                 self.called.store(true, Ordering::Release);
             }
         }
-        impl Drop for RecvAckHooker {
+        impl Drop for RecvAckCallback {
             fn drop(&mut self) {
                 assert!(self.called.load(Ordering::Acquire))
             }
         }
 
+        let recv_ack_callback = RecvAckCallback {
+            want_sid: Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap(),
+            want_seq: 1,
+            called: AtomicBool::default(),
+        };
         let mock_conn = new_mock_conn("test", mock);
         let up = new_upstream(
             &mock_conn,
-            Arc::new(RecvAckHooker {
-                want_sid: uuid::Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap(),
-                want_ids: ids,
-                want_seq: 0,
-                called: AtomicBool::default(),
-            }),
-            Arc::new(NopSendDataPointsHooker),
+            Some(Arc::new(move |sid, chunk_result| {
+                recv_ack_callback.callback(sid, chunk_result)
+            })),
+            None,
         );
         up.write_state
             .sent_storage
-            .save(up.stream_id(), 0, dps)
+            .store(up.stream_id(), 1, dpgs)
             .unwrap();
 
         let up_c = up.clone();
@@ -1050,10 +1435,9 @@ mod test {
         let mock_conn = new_mock_conn("test", mock);
 
         let up = mock_conn
-            .open_upstream(
-                "test",
-                vec![up_opts::with_flush_policy(FlushPolicy::default())],
-            )
+            .upstream_builder("test")
+            .close_timeout(Some(std::time::Duration::from_secs(1)))
+            .build()
             .await
             .unwrap();
 
@@ -1062,15 +1446,13 @@ mod test {
             .data_point_count
             .store(100_000, Ordering::Release);
 
-        up.close(None, Some(std::time::Duration::from_secs(1)))
-            .await
-            .unwrap();
+        up.close(None).await.unwrap();
         assert!(up.is_final_ack_received());
 
         //    let maybe_ack = up.next_ack().await;
         //    assert!(maybe_ack.is_none());
 
-        let err = up.close(None, None).await.expect_err("want error");
+        let err = up.close(None).await.expect_err("want error");
         assert!(matches!(err, Error::ConnectionClosed(_)));
     }
 
@@ -1099,37 +1481,35 @@ mod test {
         let mock_conn = new_mock_conn("test", mock);
 
         let up = mock_conn
-            .open_upstream(
-                "test",
-                vec![
-                    up_opts::with_flush_policy(FlushPolicy::IntervalOnly {
-                        interval: Duration::from_millis(10),
-                    }),
-                    up_opts::with_ack_interval(chrono::Duration::milliseconds(10)),
-                ],
-            )
+            .upstream_builder("test")
+            .flush_policy(FlushPolicy::IntervalOnly {
+                interval: Duration::from_millis(10),
+            })
+            .ack_interval(chrono::Duration::milliseconds(10))
+            .close_timeout(Some(std::time::Duration::from_secs(1)))
+            .build()
             .await
             .unwrap();
 
         up.write_state
             .sent_storage
-            .save(
+            .store(
                 up.stream_id(),
                 0,
-                vec![DataPoint {
+                vec![DataPointGroup {
                     id: msg::DataId {
                         name: "test".to_string(),
-                        r#type: "test".to_string(),
+                        type_: "test".to_string(),
                     },
-                    elapsed_time: chrono::Duration::zero(),
-                    payload: vec![1, 2, 3, 4],
+                    data_points: vec![DataPoint {
+                        elapsed_time: chrono::Duration::zero(),
+                        payload: vec![1, 2, 3, 4].into(),
+                    }],
                 }],
             )
             .unwrap();
 
-        up.close(None, Some(std::time::Duration::from_secs(1)))
-            .await
-            .unwrap();
+        up.close(None).await.unwrap();
         assert!(!up.is_final_ack_received());
         // assert!(up.next_ack().await.is_none());
     }

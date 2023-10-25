@@ -189,7 +189,7 @@ mod tests {
             name: String::from("name"),
             priority: 1,
             elapsed_time: chrono::Duration::seconds(2),
-            base_time: chrono::Utc.ymd(2000, 1, 2).and_hms(3, 4, 5),
+            base_time: chrono::Utc.with_ymd_and_hms(2000, 1, 2, 3, 4, 5).unwrap(),
         };
 
         let data_id = msg::DataId::parse_str("test_id_type:test_id").unwrap();
@@ -199,7 +199,7 @@ mod tests {
 
         let data_filter = msg::DataFilter {
             name: "test".to_string(),
-            r#type: "test_field_type".to_string(),
+            type_: "test_field_type".to_string(),
         };
         let down_filter = msg::DownstreamFilter {
             source_node_id: "8aa70edc-3daf-4ae5-ace9-20e3c09426d3".to_string(),
@@ -220,7 +220,7 @@ mod tests {
 
         let point = msg::DataPoint {
             elapsed_time: chrono::Duration::seconds(100).num_nanoseconds().unwrap(),
-            payload: vec![1, 2, 3, 4],
+            payload: vec![1, 2, 3, 4].into(),
         };
 
         let data_points = vec![point];
@@ -364,7 +364,7 @@ mod tests {
                     .unwrap(),
                 assigned_stream_id_alias: 2,
                 data_id_aliases: id_alias.clone(),
-                server_time: chrono::Utc.timestamp(1, 420_000_000),
+                server_time: chrono::Utc.timestamp_opt(1, 420_000_000).unwrap(),
             }
             .into(),
             proto: autogen::Message {
@@ -378,7 +378,8 @@ mod tests {
                         )
                         .unwrap()
                         .as_bytes()
-                        .to_vec(),
+                        .to_vec()
+                        .into(),
                         assigned_stream_id_alias: 2,
                         data_id_aliases: autogen_id_alias.clone(),
                         server_time: 1_420_000_000,
@@ -400,7 +401,8 @@ mod tests {
                         stream_id: uuid::Uuid::from_str("b6ac8145-0dbb-4660-a99a-d891f6b74db5")
                             .unwrap()
                             .as_bytes()
-                            .to_vec(),
+                            .to_vec()
+                            .into(),
                         extension_fields: None,
                     },
                 )),
@@ -444,7 +446,8 @@ mod tests {
                         stream_id: uuid::Uuid::from_str("b6ac8145-0dbb-4660-a99a-d891f6b74db5")
                             .unwrap()
                             .as_bytes()
-                            .to_vec(),
+                            .to_vec()
+                            .into(),
                         total_data_points: 2,
                         final_sequence_number: 3,
                         extension_fields: Some(autogen::UpstreamCloseRequestExtensionFields {
@@ -481,6 +484,7 @@ mod tests {
                 expiry_interval: chrono::Duration::seconds(1),
                 data_id_aliases: id_alias.clone(),
                 qos: msg::QoS::Reliable,
+                omit_empty_chunk: false,
             }
             .into(),
             proto: autogen::Message {
@@ -493,6 +497,7 @@ mod tests {
                         data_id_aliases: id_alias.clone(),
                         qos: autogen::QoS::Reliable.into(),
                         extension_fields: None,
+                        omit_empty_chunk: false,
                     },
                 )),
             },
@@ -500,7 +505,7 @@ mod tests {
         cases.push(Case {
             msg: msg::DownstreamOpenResponse {
                 request_id: 1.into(),
-                server_time: chrono::Utc.timestamp(123_456_789, 123_456_789),
+                server_time: chrono::Utc.timestamp_opt(123_456_789, 123_456_789).unwrap(),
                 result_code: msg::ResultCode::Succeeded,
                 result_string: "ok".to_string(),
                 assigned_stream_id: uuid::Uuid::from_str("b6ac8145-0dbb-4660-a99a-d891f6b74db5")
@@ -512,8 +517,13 @@ mod tests {
                     autogen::DownstreamOpenResponse {
                         request_id: 1,
                         server_time: chrono::Utc
-                            .timestamp(123_456_789, 123_456_789)
-                            .timestamp_nanos(),
+                            .timestamp_opt(123_456_789, 123_456_789)
+                            .unwrap()
+                            .timestamp_nanos_opt()
+                            .unwrap_or_else(|| {
+                                log::warn!("server time overflow");
+                                Default::default()
+                            }),
                         result_code: autogen::ResultCode::Succeeded.into(),
                         result_string: "ok".to_string(),
                         assigned_stream_id: uuid::Uuid::parse_str(
@@ -521,7 +531,8 @@ mod tests {
                         )
                         .unwrap()
                         .as_bytes()
-                        .to_vec(),
+                        .to_vec()
+                        .into(),
                         ..Default::default()
                     },
                 )),
@@ -542,7 +553,8 @@ mod tests {
                         stream_id: uuid::Uuid::from_str("b6ac8145-0dbb-4660-a99a-d891f6b74db5")
                             .unwrap()
                             .as_bytes()
-                            .to_vec(),
+                            .to_vec()
+                            .into(),
                         ..Default::default()
                     },
                 )),
@@ -579,7 +591,8 @@ mod tests {
                         stream_id: uuid::Uuid::from_str("b6ac8145-0dbb-4660-a99a-d891f6b74db5")
                             .unwrap()
                             .as_bytes()
-                            .to_vec(),
+                            .to_vec()
+                            .into(),
                         extension_fields: None,
                     },
                 )),
@@ -712,8 +725,8 @@ mod tests {
                 request_call_id: "request_call_id".to_string(),
                 destination_node_id: "node_id".to_string(),
                 name: "name".to_string(),
-                f_type: "type".to_string(),
-                payload: vec![1, 2, 3, 4],
+                type_: "type".to_string(),
+                payload: vec![1, 2, 3, 4].into(),
             }
             .into(),
             proto: autogen::Message {
@@ -723,8 +736,8 @@ mod tests {
                         request_call_id: "request_call_id".to_string(),
                         destination_node_id: "node_id".to_string(),
                         name: "name".to_string(),
-                        r#type: "type".to_string(),
-                        payload: vec![1, 2, 3, 4],
+                        type_: "type".to_string(),
+                        payload: vec![1, 2, 3, 4].into(),
                         ..Default::default()
                     },
                 )),
@@ -754,8 +767,8 @@ mod tests {
                 request_call_id: "request_call_id".to_string(),
                 source_node_id: "node_id".to_string(),
                 name: "name".to_string(),
-                f_type: "type".to_string(),
-                payload: vec![1, 2, 3, 4],
+                type_: "type".to_string(),
+                payload: vec![1, 2, 3, 4].into(),
             }
             .into(),
             proto: autogen::Message {
@@ -765,8 +778,8 @@ mod tests {
                         request_call_id: "request_call_id".to_string(),
                         source_node_id: "node_id".to_string(),
                         name: "name".to_string(),
-                        r#type: "type".to_string(),
-                        payload: vec![1, 2, 3, 4],
+                        type_: "type".to_string(),
+                        payload: vec![1, 2, 3, 4].into(),
                         ..Default::default()
                     },
                 )),
@@ -841,6 +854,7 @@ mod tests {
         cases.push(Case {
             msg: msg::DownstreamMetadata {
                 request_id: 1.into(),
+                stream_id_alias: 2,
                 source_node_id: "source_node_id".to_string(),
                 metadata: msg::ReceivableMetadata::BaseTime(bt.clone()),
             }
@@ -849,6 +863,7 @@ mod tests {
                 message: Some(autogen::message::Message::DownstreamMetadata(
                     autogen::DownstreamMetadata {
                         request_id: 1,
+                        stream_id_alias: 2,
                         source_node_id: "source_node_id".to_string(),
                         metadata: Some(autogen::downstream_metadata::Metadata::BaseTime(bt.into())),
                         ..Default::default()

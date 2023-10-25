@@ -7,12 +7,22 @@ mod quic;
 mod ws;
 
 pub(crate) use negotiation::NegotiationQuery;
+pub use quic::CongestionConfig as QuicCongestionConfig;
 pub use quic::Connector as QuicConnector;
 pub use quic::ConnectorConfig as QuicConfig;
 pub use ws::Connector as WebSocketConnector;
 pub use ws::ConnectorConfig as WebSocketConfig;
 
 use crate::Result;
+
+/// トランスポートの種別です。
+#[derive(Clone, Debug)]
+pub enum TransportKind {
+    /// QUICトランスポート
+    Quic,
+    /// WebSocketトランスポート
+    WebSocket,
+}
 
 #[async_trait]
 pub trait Transport: Send + Sync {
@@ -54,23 +64,10 @@ impl<U: UnreliableTransport + ?Sized> UnreliableTransport for Box<U> {
     }
 }
 
-#[derive(Clone, Debug)]
-pub enum Connector {
-    Ws(WebSocketConnector),
-    Quic(QuicConnector),
+/// トランスポートのコネクターです。
+#[async_trait]
+pub trait Connector: Send + Sync {
+    async fn connect(&self) -> Result<(BoxedTransport, Option<BoxedUnreliableTransport>)>;
 }
 
-impl Connector {
-    pub async fn connect(&self) -> Result<(BoxedTransport, Option<BoxedUnreliableTransport>)> {
-        match self {
-            Self::Ws(conn) => {
-                let res = conn.connect().await?;
-                Ok((Box::new(res), None))
-            }
-            Self::Quic(conn) => {
-                let (tr, utr) = conn.connect().await?;
-                Ok((Box::new(tr), utr))
-            }
-        }
-    }
-}
+pub type BoxedConnector = Box<dyn Connector>;

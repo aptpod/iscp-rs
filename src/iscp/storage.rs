@@ -1,5 +1,6 @@
 //! ストレージに関するモジュールです。
 
+use bytes::Bytes;
 use std::{
     collections::{hash_map::Entry, HashMap},
     fmt::Debug,
@@ -7,20 +8,21 @@ use std::{
 };
 use uuid::Uuid;
 
-use crate::{Cancel, DataPoint, DataPointId, Error, Result};
+use crate::{Cancel, DataId, DataPoint, DataPointGroup, Error, Result};
 
 pub(crate) trait SentStorage: Sync + Send + Debug {
-    fn save(&self, stream_id: Uuid, serial: u32, dps: Vec<DataPoint>) -> Result<()>;
-    fn remove(&self, stream_id: Uuid, serial: u32) -> Option<Vec<DataPoint>>;
+    fn store(&self, stream_id: Uuid, serial: u32, dpgs: Vec<DataPointGroup>) -> Result<()>;
+    fn remove(&self, stream_id: Uuid, serial: u32) -> Option<Vec<DataPointGroup>>;
 
     /// remaining returns remaining counts of serial number
     fn remaining(&self, stream_id: Uuid) -> usize;
 }
+
 impl<S: SentStorage + ?Sized> SentStorage for Box<S> {
-    fn save(&self, stream_id: Uuid, serial: u32, dps: Vec<DataPoint>) -> Result<()> {
-        (**self).save(stream_id, serial, dps)
+    fn store(&self, stream_id: Uuid, serial: u32, dpgs: Vec<DataPointGroup>) -> Result<()> {
+        (**self).store(stream_id, serial, dpgs)
     }
-    fn remove(&self, stream_id: Uuid, serial: u32) -> Option<Vec<DataPoint>> {
+    fn remove(&self, stream_id: Uuid, serial: u32) -> Option<Vec<DataPointGroup>> {
         (**self).remove(stream_id, serial)
     }
     fn remaining(&self, stream_id: Uuid) -> usize {
@@ -40,10 +42,10 @@ impl InMemSentStorage {
 }
 
 impl SentStorage for InMemSentStorage {
-    fn save(&self, stream_id: Uuid, serial: u32, dps: Vec<DataPoint>) -> Result<()> {
-        self.inner.lock().unwrap().save(stream_id, serial, dps)
+    fn store(&self, stream_id: Uuid, serial: u32, dpgs: Vec<DataPointGroup>) -> Result<()> {
+        self.inner.lock().unwrap().save(stream_id, serial, dpgs)
     }
-    fn remove(&self, stream_id: Uuid, serial: u32) -> Option<Vec<DataPoint>> {
+    fn remove(&self, stream_id: Uuid, serial: u32) -> Option<Vec<DataPointGroup>> {
         self.inner.lock().unwrap().remove(stream_id, serial)
     }
     fn remaining(&self, stream_id: Uuid) -> usize {
@@ -53,20 +55,20 @@ impl SentStorage for InMemSentStorage {
 
 #[derive(Clone, Default, Debug)]
 pub(super) struct InMemStorageInner {
-    buf: HashMap<Uuid, HashMap<u32, Vec<DataPoint>>>,
+    buf: HashMap<Uuid, HashMap<u32, Vec<DataPointGroup>>>,
 }
 
 impl InMemStorageInner {
-    fn save(&mut self, stream_id: Uuid, serial: u32, dps: Vec<DataPoint>) -> Result<()> {
+    fn save(&mut self, stream_id: Uuid, serial: u32, dpgs: Vec<DataPointGroup>) -> Result<()> {
         match self.buf.entry(stream_id) {
-            Entry::Vacant(e) => e.insert(HashMap::new()).insert(serial, dps),
-            Entry::Occupied(mut e) => e.get_mut().insert(serial, dps),
+            Entry::Vacant(e) => e.insert(HashMap::new()).insert(serial, dpgs),
+            Entry::Occupied(mut e) => e.get_mut().insert(serial, dpgs),
         };
 
         Ok(())
     }
 
-    fn remove(&mut self, stream_id: Uuid, serial: u32) -> Option<Vec<DataPoint>> {
+    fn remove(&mut self, stream_id: Uuid, serial: u32) -> Option<Vec<DataPointGroup>> {
         match self.buf.entry(stream_id) {
             Entry::Vacant(_) => None,
             Entry::Occupied(mut e) => e.get_mut().remove(&serial),
@@ -127,16 +129,16 @@ impl Default for InMemSentStorageNoPayload {
 }
 
 impl SentStorage for InMemSentStorageNoPayload {
-    fn save(&self, stream_id: Uuid, serial: u32, dps: Vec<DataPoint>) -> Result<()> {
+    fn store(&self, stream_id: Uuid, serial: u32, dpgs: Vec<DataPointGroup>) -> Result<()> {
         match self.inner.lock().unwrap().entry(stream_id) {
-            Entry::Occupied(mut e) => e.get_mut().save(serial, dps),
+            Entry::Occupied(mut e) => e.get_mut().store(serial, dpgs),
             Entry::Vacant(e) => e
                 .insert(InMemSentStorageNoPayloadInner::new(self.timeout))
-                .save(serial, dps),
+                .store(serial, dpgs),
         }
     }
 
-    fn remove(&self, stream_id: Uuid, serial: u32) -> Option<Vec<DataPoint>> {
+    fn remove(&self, stream_id: Uuid, serial: u32) -> Option<Vec<DataPointGroup>> {
         match self.inner.lock().unwrap().entry(stream_id) {
             Entry::Occupied(mut e) => e.get_mut().remove(serial),
             Entry::Vacant(_) => None,
@@ -151,12 +153,19 @@ impl SentStorage for InMemSentStorageNoPayload {
     }
 }
 
+#[derive(Clone, Eq, PartialEq, Hash, Debug)]
+struct DataPointId {
+    pub id: DataId,
+    pub elapsed_time: chrono::Duration,
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct InMemSentStorageNoPayloadInner {
     buf: HashMap<u32, Vec<DataPointId>>,
     expiries: HashMap<u32, std::time::SystemTime>,
     timeout: std::time::Duration,
 }
+
 impl Default for InMemSentStorageNoPayloadInner {
     fn default() -> Self {
         Self::new(std::time::Duration::from_secs(10))
@@ -172,17 +181,21 @@ impl InMemSentStorageNoPayloadInner {
         }
     }
 
-    fn save(&mut self, serial: u32, dps: Vec<DataPoint>) -> Result<()> {
+    fn store(&mut self, serial: u32, dpgs: Vec<DataPointGroup>) -> Result<()> {
         let entry = match self.buf.entry(serial) {
             Entry::Vacant(e) => e,
             Entry::Occupied(_) => return Err(Error::unexpected("recode already exist")),
         };
 
-        let d = dps
+        let d = dpgs
             .into_iter()
-            .map(|d| DataPointId {
-                id: d.id,
-                elapsed_time: d.elapsed_time,
+            .map(|dpg| DataPointId {
+                id: dpg.id,
+                elapsed_time: dpg
+                    .data_points
+                    .get(0)
+                    .map(|dp| dp.elapsed_time)
+                    .unwrap_or_else(chrono::Duration::zero),
             })
             .collect::<Vec<_>>();
         entry.insert(d);
@@ -193,14 +206,16 @@ impl InMemSentStorageNoPayloadInner {
         Ok(())
     }
 
-    fn remove(&mut self, serial: u32) -> Option<Vec<DataPoint>> {
+    fn remove(&mut self, serial: u32) -> Option<Vec<DataPointGroup>> {
         self.expiries.remove(&serial);
         self.buf.remove(&serial).map(|v| {
             v.into_iter()
-                .map(|id| DataPoint {
+                .map(|id| DataPointGroup {
                     id: id.id,
-                    elapsed_time: id.elapsed_time,
-                    payload: Vec::new(),
+                    data_points: vec![DataPoint {
+                        elapsed_time: id.elapsed_time,
+                        payload: Bytes::new(),
+                    }],
                 })
                 .collect::<Vec<_>>()
         })
@@ -302,7 +317,7 @@ mod test {
     async fn ut_remove_expired() {
         let stream_id = Uuid::new_v4();
         let m = InMemSentStorageNoPayload::new(std::time::Duration::from_millis(1));
-        m.save(stream_id, 1, Vec::new()).unwrap();
+        m.store(stream_id, 1, Vec::new()).unwrap();
         assert_eq!(1, m.remaining(stream_id));
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         assert_eq!(0, m.remaining(stream_id));

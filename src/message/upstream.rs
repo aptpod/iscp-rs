@@ -61,7 +61,7 @@ impl Default for UpstreamOpenResponse {
             request_id: super::RequestId::default(),
             assigned_stream_id: Uuid::default(),
             assigned_stream_id_alias: 0,
-            server_time: Utc.ymd(1970, 1, 1).and_hms(0, 0, 0),
+            server_time: Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap(),
             result_code: super::ResultCode::Succeeded,
             result_string: String::new(),
             data_id_aliases: DataIdAliasMap::default(),

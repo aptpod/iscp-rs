@@ -15,16 +15,16 @@ impl From<super::DataId> for DataFilter {
     fn from(id: super::DataId) -> Self {
         Self {
             name: id.name,
-            r#type: id.r#type,
+            type_: id.type_,
         }
     }
 }
 
 impl DataFilter {
-    pub fn new<T: ToString>(name: T, f_type: T) -> Self {
+    pub fn new<T1: ToString, T2: ToString>(name: T1, type_: T2) -> Self {
         Self {
             name: name.to_string(),
-            r#type: f_type.to_string(),
+            type_: type_.to_string(),
         }
     }
 

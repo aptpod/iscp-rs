@@ -1,17 +1,11 @@
 //! iSCPのライブラリを提供します。
 
-use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use std::{
-    collections::HashMap,
-    fmt::Debug,
-    net::{SocketAddr, ToSocketAddrs},
-    sync::Arc,
-};
+use std::{collections::HashMap, fmt::Debug, sync::Arc};
 use url::Url;
 use uuid::Uuid;
 
-use crate::{enc, msg, tr, wire, Error, Result};
+use crate::{enc, msg, tr, wire, Error, Result, TokenSource};
 
 #[cfg(test)]
 use mockall::predicate::*;
@@ -19,87 +13,27 @@ use mockall::predicate::*;
 mod connection;
 mod data;
 mod downstream;
-pub mod downstream_options;
 mod flush_policy;
-mod hooker;
 mod metadata;
 mod state;
 mod storage;
 mod upstream;
-pub mod upstream_options;
+pub use crate::transport::TransportKind;
 pub use connection::*;
 pub use data::*;
 pub use downstream::*;
-pub use downstream_options as down_opts;
 pub use flush_policy::*;
-pub use hooker::*;
 pub use metadata::*;
-pub(self) use state::*;
-pub(self) use storage::*;
+use state::*;
+use storage::*;
 pub use upstream::*;
-pub use upstream_options as up_opts;
 
 pub type DownstreamFilter = msg::DownstreamFilter;
 pub type QoS = msg::QoS;
 
-/// 認証トークンを取得するためのインターフェースです。
-#[async_trait]
-pub trait TokenSource: Sync + Send {
-    /// トークンを取得します。
-    ///
-    ///  iSCPコネクションを開く度に、このメソッドをコールしトークンを取得します。
-    async fn token(&self) -> Result<String>;
-}
-
-/// 静的に認証トークンを指定するTokenSourceです。
-///
-/// APIトークンなどを使用するための実装です。クライアントシークレットには使用できません。
-#[derive(Clone, Debug, Default)]
-pub struct StaticTokenSource {
-    token: msg::AccessToken,
-}
-
-impl StaticTokenSource {
-    /// StaticTokenSource を生成します。
-    pub fn new<T: ToString>(token: T) -> Self {
-        Self {
-            token: msg::AccessToken::new(token),
-        }
-    }
-}
-
-#[async_trait]
-impl TokenSource for StaticTokenSource {
-    /// トークンを取得します。
-    ///
-    /// 常に同じトークンを返却します。
-    async fn token(&self) -> Result<String> {
-        Ok(self.token.clone().into())
-    }
-}
-
-#[async_trait]
-impl<T: TokenSource + Sync + Send + Clone> TokenSource for Box<T> {
-    async fn token(&self) -> Result<String> {
-        (**self).token().await
-    }
-}
-
-/// トランスポートです。
-#[derive(Clone, Debug)]
-pub enum Transport {
-    /// QUICトランスポート
-    Quic,
-    /// WebSocketトランスポート
-    Ws,
-}
-
 /// [`Conn`]のビルダーです。
-pub struct ConnBuilder<T>
-where
-    T: TokenSource + Clone,
-{
-    config: ConnConfig<T>,
+pub struct ConnBuilder {
+    config: ConnConfig,
     sent_storage: Arc<dyn SentStorage>,
     upstream_repository: Arc<dyn UpstreamRepository>,
     downstream_repository: Arc<dyn DownstreamRepository>,
@@ -107,33 +41,27 @@ where
 
 /// [`Conn`]の生成に使用するパラメーターです。
 #[derive(Clone)]
-pub struct ConnConfig<T>
-where
-    T: TokenSource + Clone,
-{
+pub struct ConnConfig {
     pub address: String,
-    pub transport: Transport,
+    pub transport: TransportKind,
     pub websocket_config: Option<tr::WebSocketConfig>,
     pub quic_config: Option<tr::QuicConfig>,
-    pub encoding: enc::Encoding,
+    pub encoding: enc::EncodingKind,
     pub node_id: String,
     pub project_uuid: Option<String>,
     pub ping_interval: chrono::Duration,
     pub ping_timeout: chrono::Duration,
-    pub token_source: Option<T>,
+    pub token_source: Option<Arc<dyn TokenSource>>,
 }
 
-impl<T> Default for ConnConfig<T>
-where
-    T: TokenSource + Clone,
-{
+impl Default for ConnConfig {
     fn default() -> Self {
         Self {
             address: "localhost:8080".to_string(),
-            transport: Transport::Quic,
+            transport: TransportKind::Quic,
             websocket_config: None,
             quic_config: None,
-            encoding: enc::Encoding::Proto,
+            encoding: enc::EncodingKind::Proto,
             node_id: String::new(),
             project_uuid: None,
             ping_interval: chrono::Duration::seconds(10),
@@ -143,21 +71,20 @@ where
     }
 }
 
-impl<T> ConnBuilder<T>
-where
-    T: TokenSource + Clone + 'static,
-{
-    pub fn new(address: &str, transport: Transport) -> Self {
-        Self::new_with_conn_config(ConnConfig {
-            address: address.to_string(),
-            transport,
-            ..Default::default()
-        })
+impl ConnBuilder {
+    /// コネクションのビルダーを作成します
+    pub fn new(address: &str, transport: TransportKind) -> Self {
+        Self::with_config(address, transport, &ConnConfig::default())
     }
 
-    pub fn new_with_conn_config(c: ConnConfig<T>) -> Self {
+    /// `ConnConfig`を元にコネクションのビルダーを作成します。
+    /// `ConnConfig`の`address`と`transport`は無視され、このコンストラクタに渡した引数が使われます。
+    pub fn with_config(address: &str, transport: TransportKind, config: &ConnConfig) -> Self {
+        let mut config = config.clone();
+        config.address = address.into();
+        config.transport = transport;
         Self {
-            config: c,
+            config,
             upstream_repository: Arc::new(InMemStreamRepository::new()),
             downstream_repository: Arc::new(InMemStreamRepository::new()),
             sent_storage: Arc::new(InMemSentStorage::new()),
@@ -174,7 +101,7 @@ where
         self
     }
 
-    pub fn encoding(mut self, encoding: enc::Encoding) -> Self {
+    pub fn encoding(mut self, encoding: enc::EncodingKind) -> Self {
         self.config.encoding = encoding;
         self
     }
@@ -199,7 +126,7 @@ where
         self
     }
 
-    pub fn token_source(mut self, token_source: Option<T>) -> Self {
+    pub fn token_source(mut self, token_source: Option<Arc<dyn TokenSource>>) -> Self {
         self.config.token_source = token_source;
         self
     }
@@ -231,14 +158,14 @@ where
         self
     }
 
-    pub async fn connect(self) -> Result<Conn<T>> {
+    pub async fn connect(self) -> Result<Conn> {
         let connector = self.connect_wire().await?;
         self.connect_with_connector(connector).await
     }
 
     async fn connect_wire(&self) -> Result<wire::BoxedConnector> {
-        let tr_connector: tr::Connector = match self.config.transport {
-            Transport::Ws => {
+        let tr_connector: tr::BoxedConnector = match self.config.transport {
+            TransportKind::WebSocket => {
                 let cfg = self.config.websocket_config.clone().unwrap_or_default();
 
                 let scheme = if cfg.enable_tls { "https" } else { "http" };
@@ -246,16 +173,16 @@ where
 
                 tr::WebSocketConnector::new(host, Some(port), cfg).into()
             }
-            Transport::Quic => {
+            TransportKind::Quic => {
                 let cfg = self.config.quic_config.clone().unwrap_or_default();
 
                 let (host, port) = parse_host_and_port("https", &self.config.address)?;
-                let sock_addr = format!("{}:{}", host, port)
-                    .as_str()
-                    .to_socket_addrs()
-                    .unwrap()
-                    .find(|x| matches!(x, SocketAddr::V4(_)))
-                    .unwrap();
+                let sock_addr = tokio::net::lookup_host(format!("{}:{}", host, port))
+                    .await
+                    .map_err(Error::connect)?
+                    .min() // Prefer v4 address
+                    .ok_or_else(|| Error::connect("valid address not found"))?;
+
                 tr::QuicConnector::new(sock_addr, cfg).into()
             }
         };
@@ -266,7 +193,7 @@ where
         )))
     }
 
-    async fn connect_with_connector(self, connector: wire::BoxedConnector) -> Result<Conn<T>> {
+    async fn connect_with_connector(self, connector: wire::BoxedConnector) -> Result<Conn> {
         // Validate
         if self.config.node_id.is_empty() {
             return Err(Error::invalid_value("need any edge id"));

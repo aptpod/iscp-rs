@@ -4,12 +4,10 @@ use std::sync::Arc;
 use super::Conn;
 use crate::{
     error::{Error, Result},
-    transport::{BoxedUnreliableTransport, NegotiationQuery, Transport},
+    transport::{BoxedTransport, BoxedUnreliableTransport, NegotiationQuery},
 };
 
 use log::info;
-use rustls::client::HandshakeSignatureValid;
-use rustls::internal::msgs::handshake::DigitallySignedStruct;
 
 pub const PROTOCOL: &[&[u8]] = &[b"iscp"];
 
@@ -18,9 +16,13 @@ pub const PROTOCOL: &[&[u8]] = &[b"iscp"];
 pub struct ConnectorConfig {
     /// MTUの設定です。
     pub mtu: usize,
-
     /// サーバー証明書の検証に使用する設定です。
     pub host: String,
+    /// 送信されるデータグラムのバッファ最大バイト数
+    /// [Read more](https://docs.rs/quinn-proto/latest/quinn_proto/struct.TransportConfig.html#method.datagram_send_buffer_size)
+    pub datagram_send_buffer_size: Option<usize>,
+    /// 輻輳制御の設定です。
+    pub congestion: CongestionConfig,
 }
 
 impl Default for ConnectorConfig {
@@ -28,10 +30,29 @@ impl Default for ConnectorConfig {
         Self {
             mtu: 1500,
             host: "".to_string(),
+            datagram_send_buffer_size: None,
+            congestion: CongestionConfig::default(),
         }
     }
 }
 
+/// 輻輳制御の設定です。
+/// [Read more](https://docs.rs/quinn/0.9.3/quinn/congestion/index.html)
+#[derive(Clone, Debug)]
+pub enum CongestionConfig {
+    Default,
+    Bbr(quinn::congestion::BbrConfig),
+    Cubic(quinn::congestion::CubicConfig),
+    NewReno(quinn::congestion::NewRenoConfig),
+}
+
+impl Default for CongestionConfig {
+    fn default() -> Self {
+        Self::Default
+    }
+}
+
+/// QUIC用のコネクターです。
 #[derive(Clone, Debug)]
 pub struct Connector {
     cfg: ConnectorConfig,
@@ -41,11 +62,10 @@ pub struct Connector {
     bind_addr: SocketAddr,
     negotiation: NegotiationQuery,
     timeout: std::time::Duration,
-    datagram_send_buffer_size: Option<usize>,
 }
 
 #[allow(dead_code)]
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Certificate {
     Pem(Vec<u8>),
     Der(Vec<u8>),
@@ -72,24 +92,6 @@ impl rustls::client::ServerCertVerifier for SkipServerVerification {
     ) -> Result<rustls::client::ServerCertVerified, rustls::Error> {
         Ok(rustls::client::ServerCertVerified::assertion())
     }
-
-    fn verify_tls12_signature(
-        &self,
-        _message: &[u8],
-        _cert: &rustls::Certificate,
-        _dss: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        Ok(HandshakeSignatureValid::assertion())
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        _message: &[u8],
-        _cert: &rustls::Certificate,
-        _dss: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        Ok(HandshakeSignatureValid::assertion())
-    }
 }
 
 impl TryFrom<Certificate> for rustls::Certificate {
@@ -110,9 +112,9 @@ impl TryFrom<Certificate> for rustls::Certificate {
     }
 }
 
-impl From<Connector> for super::super::Connector {
+impl From<Connector> for super::super::BoxedConnector {
     fn from(c: Connector) -> Self {
-        Self::Quic(c)
+        Box::new(c)
     }
 }
 
@@ -126,7 +128,6 @@ impl Default for Connector {
             bind_addr: "0.0.0.0:0".parse().unwrap(),
             negotiation: NegotiationQuery::default(),
             timeout: std::time::Duration::from_secs(2),
-            datagram_send_buffer_size: None,
         }
     }
 }
@@ -179,11 +180,10 @@ impl Connector {
         };
 
         client_crypto.alpn_protocols = PROTOCOL.iter().map(|&x| x.into()).collect();
-        let mut config = quinn::ClientConfig::new(Arc::new(client_crypto));
 
-        let tr_config = Arc::get_mut(&mut config.transport).unwrap();
+        let mut tr_config = quinn::TransportConfig::default();
 
-        if let Some(value) = self.datagram_send_buffer_size {
+        if let Some(value) = self.cfg.datagram_send_buffer_size {
             tr_config.datagram_send_buffer_size(value);
         }
         tr_config.max_idle_timeout(Some(
@@ -191,23 +191,24 @@ impl Connector {
         ));
         tr_config.keep_alive_interval(None);
 
+        match &self.cfg.congestion {
+            CongestionConfig::Default => (),
+            CongestionConfig::Bbr(bbr) => {
+                tr_config.congestion_controller_factory(Arc::new(bbr.clone()));
+            }
+            CongestionConfig::Cubic(cubic) => {
+                tr_config.congestion_controller_factory(Arc::new(cubic.clone()));
+            }
+            CongestionConfig::NewReno(new_reno) => {
+                tr_config.congestion_controller_factory(Arc::new(new_reno.clone()));
+            }
+        }
+
+        let mut config = quinn::ClientConfig::new(Arc::new(client_crypto));
+
+        config.transport_config(Arc::new(tr_config));
+
         Ok(config)
-    }
-
-    pub async fn connect(&self) -> Result<(impl Transport, Option<BoxedUnreliableTransport>)> {
-        let e = self.to_endpoint()?;
-
-        let new_conn = e.connect(self.addr, &self.cfg.host)?.await?;
-        info!("connected: addr = {}", new_conn.connection.remote_address());
-        self.exec_negotiation(&new_conn.connection).await?;
-        info!("negotiation complete");
-
-        let conn = Conn::new(new_conn, e, self.cfg.mtu, self.timeout).await?;
-
-        let utr = Box::new(conn.clone());
-        let utr = utr as BoxedUnreliableTransport;
-
-        Ok((conn, Some(utr)))
     }
 
     async fn exec_negotiation(&self, conn: &quinn::Connection) -> Result<()> {
@@ -216,5 +217,26 @@ impl Connector {
         stream.write_all(&negotiation).await?;
         stream.finish().await?;
         Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::transport::Connector for Connector {
+    async fn connect(&self) -> Result<(BoxedTransport, Option<BoxedUnreliableTransport>)> {
+        log::trace!("quic connector config: {:?}", self.cfg);
+
+        let e = self.to_endpoint()?;
+
+        let connection = e.connect(self.addr, &self.cfg.host)?.await?;
+        info!("connected: addr = {}", connection.remote_address());
+        self.exec_negotiation(&connection).await?;
+        info!("negotiation complete");
+
+        let conn = Conn::new(connection, e, self.cfg.mtu, self.timeout).await?;
+
+        let utr = Box::new(conn.clone());
+        let utr = utr as BoxedUnreliableTransport;
+
+        Ok((Box::new(conn), Some(utr)))
     }
 }

@@ -42,7 +42,7 @@ impl From<DownstreamChunkResult> for msg::DownstreamChunkResult {
 impl From<msg::DownstreamChunkResult> for DownstreamChunkResult {
     fn from(r: msg::DownstreamChunkResult) -> Self {
         Self {
-            stream_id_of_upstream: r.stream_id_of_upstream.as_bytes().to_vec(),
+            stream_id_of_upstream: r.stream_id_of_upstream.as_bytes().to_vec().into(),
             sequence_number_in_upstream: r.sequence_number_in_upstream,
             result_code: r.result_code.into(),
             result_string: r.result_string,
@@ -147,7 +147,7 @@ impl From<msg::UpstreamInfo> for UpstreamInfo {
         Self {
             source_node_id: i.source_node_id,
             session_id: i.session_id,
-            stream_id: i.stream_id.as_bytes().to_vec(),
+            stream_id: i.stream_id.as_bytes().to_vec().into(),
         }
     }
 }
@@ -307,7 +307,7 @@ mod test {
     #[test]
     fn utf8() {
         let info = UpstreamInfo {
-            stream_id: vec![0, 159, 146, 150],
+            stream_id: vec![0, 159, 146, 150].into(),
             ..Default::default()
         };
         let want = msg::UpstreamInfo::default();

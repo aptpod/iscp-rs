@@ -54,9 +54,12 @@ impl From<msg::UpstreamOpenResponse> for UpstreamOpenResponse {
     fn from(r: msg::UpstreamOpenResponse) -> Self {
         Self {
             request_id: r.request_id.value(),
-            assigned_stream_id: r.assigned_stream_id.as_bytes().to_vec(),
+            assigned_stream_id: r.assigned_stream_id.as_bytes().to_vec().into(),
             assigned_stream_id_alias: r.assigned_stream_id_alias,
-            server_time: r.server_time.timestamp_nanos(),
+            server_time: r.server_time.timestamp_nanos_opt().unwrap_or_else(|| {
+                log::warn!("server time overflow");
+                Default::default()
+            }),
             result_code: r.result_code.into(),
             result_string: r.result_string,
             data_id_aliases: r.data_id_aliases,
@@ -70,14 +73,14 @@ impl From<UpstreamOpenResponse> for msg::UpstreamOpenResponse {
         let secs = r.server_time / 1_000_000_000;
         let nsecs = (r.server_time % 1_000_000_000) as u32;
         let server_time = chrono::NaiveDateTime::from_timestamp_opt(secs, nsecs)
-            .unwrap_or_else(|| chrono::NaiveDateTime::from_timestamp(0, 0));
+            .unwrap_or_else(|| chrono::NaiveDateTime::from_timestamp_opt(0, 0).unwrap());
         Self {
             request_id: r.request_id.into(),
             assigned_stream_id: uuid::Builder::from_slice(&r.assigned_stream_id)
                 .unwrap_or_else(|_| uuid::Builder::nil())
                 .into_uuid(),
             assigned_stream_id_alias: r.assigned_stream_id_alias,
-            server_time: chrono::DateTime::<Utc>::from_utc(server_time, Utc),
+            server_time: chrono::DateTime::<Utc>::from_naive_utc_and_offset(server_time, Utc),
             result_code: r.result_code.into(),
             result_string: r.result_string,
             data_id_aliases: r.data_id_aliases,
@@ -95,7 +98,7 @@ impl From<msg::UpstreamResumeRequest> for UpstreamResumeRequest {
     fn from(r: msg::UpstreamResumeRequest) -> Self {
         Self {
             request_id: r.request_id.value(),
-            stream_id: r.stream_id.as_bytes().to_vec(),
+            stream_id: r.stream_id.as_bytes().to_vec().into(),
             ..Default::default()
         }
     }
@@ -159,7 +162,7 @@ impl From<msg::UpstreamCloseRequest> for UpstreamCloseRequest {
 
         Self {
             request_id: r.request_id.value(),
-            stream_id: r.stream_id.as_bytes().to_vec(),
+            stream_id: r.stream_id.as_bytes().to_vec().into(),
             total_data_points: r.total_data_points,
             final_sequence_number: r.final_sequence_number,
             extension_fields: ext,
@@ -229,7 +232,7 @@ mod test {
     macro_rules! invalid_uuid {
         ($msg:ident, $id:ident) => {
             let testee = $msg {
-                $id: vec![0, 159, 146, 150],
+                $id: vec![0, 159, 146, 150].into(),
                 ..Default::default()
             };
 

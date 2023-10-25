@@ -4,7 +4,7 @@
 ///
 /// Noneが設定されているオプションはサーバーに送信されません。
 #[derive(Default)]
-pub struct SendMetadataConfig {
+pub struct SendMetadataOptions {
     /// 永続化するかどうか
-    pub persist: Option<bool>,
+    pub persist: bool,
 }

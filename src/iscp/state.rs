@@ -6,7 +6,7 @@ use std::{
     },
 };
 
-use tokio::sync::oneshot;
+use tokio::sync::{broadcast, oneshot};
 
 use crate::{msg, Error, Result};
 
@@ -17,6 +17,7 @@ pub(super) struct State {
     pub(super) close: AtomicBool,
     downstream_alias: AtomicU32,
     waiting_reply: Mutex<HashMap<CallId, oneshot::Sender<msg::DownstreamCall>>>,
+    pub(super) tx_reply: broadcast::Sender<msg::DownstreamCall>,
 }
 
 impl Default for State {
@@ -25,6 +26,7 @@ impl Default for State {
             close: AtomicBool::new(true),
             downstream_alias: AtomicU32::new(1),
             waiting_reply: Mutex::default(),
+            tx_reply: broadcast::channel(1).0,
         }
     }
 }
@@ -60,30 +62,6 @@ impl State {
         let mut waiting = self.waiting_reply.lock().unwrap();
         waiting.remove(call_id)
     }
-    pub(super) fn register_waiting_reply(
-        &self,
-        sender: oneshot::Sender<msg::DownstreamCall>,
-    ) -> Option<CallId> {
-        let waiting = self.waiting_reply.lock().unwrap();
-
-        let mut call_id = None;
-        for key in waiting.keys() {
-            if !is_internal_call_id(key) {
-                call_id = Some(key);
-                break;
-            }
-        }
-        let call_id = match call_id {
-            Some(call_id) => call_id,
-            None => return None,
-        };
-
-        if !self.register_waiting_reply_with_call_id(call_id.clone(), sender) {
-            return None;
-        }
-
-        Some(call_id.clone())
-    }
 
     pub(super) fn register_waiting_reply_with_call_id(
         &self,
@@ -106,9 +84,4 @@ pub(super) fn new_call_id() -> CallId {
 /// send_call_and_wait_reply_call()で使用するためのコールIDを作成します。
 pub(super) fn new_internal_call_id() -> CallId {
     uuid::Uuid::new_v4().simple().to_string()
-}
-
-/// send_call_and_wait_reply_call()で使用するためのコールIDか判定します。
-fn is_internal_call_id(call_id: &CallId) -> bool {
-    call_id.find('-').is_none()
 }

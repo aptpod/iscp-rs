@@ -9,20 +9,16 @@ use log::*;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::{
-    msg, wire, BoxedDownstreamOption, BoxedUpstreamOption, Cancel, ConnConfig, Downstream,
-    DownstreamCall, DownstreamConfig, DownstreamFilter, DownstreamReplyCall, Error, Result,
-    SendMetadataConfig, TokenSource, Upstream, UpstreamCall, UpstreamConfig, UpstreamReplyCall,
-    WaitGroup, Waiter,
+    msg, wire, Cancel, ConnConfig, Downstream, DownstreamBuilder, DownstreamCall, DownstreamConfig,
+    DownstreamFilter, DownstreamReplyCall, Error, Result, SendMetadataOptions, Upstream,
+    UpstreamBuilder, UpstreamCall, UpstreamConfig, UpstreamReplyCall, WaitGroup, Waiter,
 };
 
 use super::{new_call_id, new_internal_call_id, CallId};
 
 /// iSCPのコネクションです。
 #[derive(Clone)] // TODO: unpublish clone trait
-pub struct Conn<T>
-where
-    T: TokenSource + Clone,
-{
+pub struct Conn {
     pub(crate) wire_conn: Arc<dyn wire::Connection>,
     #[allow(dead_code)]
     pub(crate) upstream_repository: Arc<dyn super::UpstreamRepository>,
@@ -36,20 +32,23 @@ where
     cmd_sender: mpsc::Sender<oneshot::Sender<msg::DownstreamCall>>,
     cancel: Cancel,
 
-    config: ConnConfig<T>,
+    config: Arc<ConnConfig>,
+}
+
+/// コネクションの切断イベントです。
+#[derive(Clone)]
+pub struct DisconnectedEvent {
+    pub config: Arc<ConnConfig>,
 }
 
 // public methods
-impl<T> Conn<T>
-where
-    T: TokenSource + Clone + 'static,
-{
+impl Conn {
     pub(super) fn new<W>(
         wire_conn: W,
         sent_storage: Arc<dyn super::SentStorage>,
         upstream_repository: Arc<dyn super::UpstreamRepository>,
         downstream_repository: Arc<dyn super::DownstreamRepository>,
-        config: ConnConfig<T>,
+        config: ConnConfig,
     ) -> Self
     where
         W: crate::wire::Connection + 'static,
@@ -66,7 +65,7 @@ where
             state: Arc::new(super::State::new(AtomicBool::new(false))),
             notify_close,
             cmd_sender,
-            config,
+            config: Arc::new(config),
         };
 
         let (waiter, wg) = WaitGroup::new();
@@ -113,46 +112,79 @@ where
     /// 基準時刻を送信します。
     ///
     /// - `t` - 基準時刻
-    /// - `opts` - メタデータ送信時のオプション
-    pub async fn send_base_time(&self, t: msg::BaseTime, opts: SendMetadataConfig) -> Result<()> {
-        self.send_metadata(msg::SendableMetadata::BaseTime(t), opts)
+    /// - `options` - メタデータ送信時のオプション
+    pub async fn send_base_time(
+        &self,
+        t: msg::BaseTime,
+        options: SendMetadataOptions,
+    ) -> Result<()> {
+        self.send_metadata(msg::SendableMetadata::BaseTime(t), options)
             .await
     }
 
     /// メタデータを送信します。
     ///
     /// - `m` - メタデータ
-    /// - `opts` - メタデータ送信時のオプション
+    /// - `options` - メタデータ送信時のオプション
     pub async fn send_metadata(
         &self,
         m: msg::SendableMetadata,
-        opts: SendMetadataConfig,
+        options: SendMetadataOptions,
     ) -> Result<()> {
         self.check_opened()?;
         let req = msg::UpstreamMetadata {
             metadata: m,
-            persist: opts.persist,
+            persist: Some(options.persist),
             ..Default::default()
         };
         self.wire_conn.upstream_metadata(req).await?;
         Ok(())
     }
 
-    /// アップストリームを開きます。
+    /// アップストリームを開くためのビルダーを返します。
     ///
     /// - `session_id` - セッションID
-    /// - `opts` - アップストリームのオプション（[`crate::up_opts`]）
-    pub async fn open_upstream(
+    pub fn upstream_builder<S: ToString>(&self, session_id: S) -> UpstreamBuilder<'_> {
+        UpstreamBuilder {
+            conn: self,
+            config: UpstreamConfig {
+                session_id: session_id.to_string(),
+                ..Default::default()
+            },
+        }
+    }
+
+    /// `UpstreamConfig`を元にアップストリームを開くためのビルダーを返します。
+    /// `UpstreamConfig`の`session_id`は無視され、このコンストラクタに渡した引数が使われます。
+    ///
+    /// - `session_id` - セッションID
+    /// - `config` - アップストリームの設定
+    pub fn upstream_builder_with_config<S: ToString>(
         &self,
-        session_id: &str,
-        opts: Vec<BoxedUpstreamOption>,
+        session_id: S,
+        config: &UpstreamConfig,
+    ) -> UpstreamBuilder<'_> {
+        UpstreamBuilder {
+            conn: self,
+            config: UpstreamConfig {
+                session_id: session_id.to_string(),
+                ..config.clone()
+            },
+        }
+    }
+
+    /// アップストリームを開きます。
+    pub(crate) async fn open_upstream<T: Into<Arc<UpstreamConfig>>>(
+        &self,
+        config: T,
     ) -> Result<Upstream> {
+        let config = config.into();
         self.check_opened()?;
 
-        let cfg = UpstreamConfig::new_with(session_id, opts);
-        let req = &cfg;
-
-        let resp = self.wire_conn.upstream_open_request(req.into()).await?;
+        let resp = self
+            .wire_conn
+            .upstream_open_request(msg::UpstreamOpenRequest::from_config(&config))
+            .await?;
         if !resp.result_code.is_succeeded() {
             return Err(Error::from(resp));
         }
@@ -163,7 +195,7 @@ where
 
         let res = Upstream::new(
             self.wire_conn.clone(),
-            cfg,
+            config,
             super::UpstreamParam {
                 stream_id: resp.assigned_stream_id,
                 stream_id_alias: resp.assigned_stream_id_alias,
@@ -176,26 +208,54 @@ where
         Ok(res)
     }
 
-    /// ダウンストリームを開きます
+    /// ダウンストリームを開くためのビルダーを返します
     ///
-    /// - `filters` - セッションID
-    /// - `opts` - ダウンストリームのオプション（[`crate::down_opts`]）
-    pub async fn open_downstream(
+    /// - `filters` - フィルターのリスト
+    pub fn downstream_builder(&self, filters: Vec<DownstreamFilter>) -> DownstreamBuilder<'_> {
+        DownstreamBuilder {
+            conn: self,
+            config: DownstreamConfig {
+                filters,
+                ..Default::default()
+            },
+        }
+    }
+
+    /// `DownstreamConfig`を元にダウンストリームを開くためのビルダーを返します。
+    /// `DownstreamConfig`の`filters`は無視され、このコンストラクタに渡した引数が使われます。
+    ///
+    /// - `filters` - フィルターのリスト
+    /// - `config` - ダウンストリームの設定
+    pub fn downstream_builder_with_config(
         &self,
         filters: Vec<DownstreamFilter>,
-        opts: Vec<BoxedDownstreamOption>,
-    ) -> Result<Downstream> {
-        self.check_opened()?;
+        config: &DownstreamConfig,
+    ) -> DownstreamBuilder<'_> {
+        DownstreamBuilder {
+            conn: self,
+            config: DownstreamConfig {
+                filters,
+                ..config.clone()
+            },
+        }
+    }
 
-        let cfg = DownstreamConfig::new_with(filters, opts);
+    /// ダウンストリームを開きます
+    pub(crate) async fn open_downstream<T: Into<Arc<DownstreamConfig>>>(
+        &self,
+        config: T,
+    ) -> Result<Downstream> {
+        let config = config.into();
+        self.check_opened()?;
 
         let stream_id_alias = self.state.next_downstream_alias();
         let data_points_subscriber = self
             .wire_conn
-            .subscribe_downstream(stream_id_alias, cfg.qos)?;
+            .subscribe_downstream(stream_id_alias, config.qos)?;
         let metadata_subscriber = self.wire_conn.subscribe_downstream_meta();
 
-        let mut req = msg::DownstreamOpenRequest::from(cfg.clone());
+        let mut req = msg::DownstreamOpenRequest::from_config(&config);
+        let data_id_aliases = req.data_id_aliases.clone();
         req.desired_stream_id_alias = stream_id_alias;
 
         let resp = self.wire_conn.downstream_open_request(req).await?;
@@ -207,7 +267,7 @@ where
             stream_id_alias, resp.assigned_stream_id
         );
 
-        let source_node_ids = cfg
+        let source_node_ids = config
             .filters
             .iter()
             .map(|f| f.source_node_id.clone())
@@ -215,7 +275,8 @@ where
 
         let down = Downstream::new(
             self.wire_conn.clone(),
-            cfg,
+            config,
+            data_id_aliases,
             super::DownstreamParam {
                 stream_id: resp.assigned_stream_id,
                 stream_id_alias,
@@ -231,23 +292,39 @@ where
     }
 
     /// コネクションの切断をサブスクライブします。
-    pub fn subscribe_close(&self) -> wire::CloseNotificationReceiver {
-        self.wire_conn.subscribe_close_notify()
+    pub fn subscribe_disconnect(&self) -> DisconnectNotificationReceiver {
+        DisconnectNotificationReceiver(
+            self.wire_conn.subscribe_disconnect_notify(),
+            self.config.clone(),
+        )
     }
 
     /// コネクションの生成に使用したパラメーターを返します。
-    pub fn to_config(&self) -> ConnConfig<T> {
+    pub fn config(&self) -> Arc<ConnConfig> {
         self.config.clone()
     }
 }
 
+/// コネクションの切断イベントを受け取るレシーバーです。
+pub struct DisconnectNotificationReceiver(wire::DisconnectNotificationReceiver, Arc<ConnConfig>);
+
+impl DisconnectNotificationReceiver {
+    pub async fn recv(&mut self) -> Option<DisconnectedEvent> {
+        self.0.recv().await;
+        Some(DisconnectedEvent {
+            config: self.1.clone(),
+        })
+    }
+}
+
 // e2e
-impl<T> Conn<T>
-where
-    T: TokenSource + Clone + 'static,
-{
+impl Conn {
     async fn read_reply_call_loop(&self, mut recv: mpsc::Receiver<msg::DownstreamCall>) {
         while let Some(call) = recv.recv().await {
+            if self.state.tx_reply.receiver_count() > 0 {
+                log_err!(warn, self.state.tx_reply.send(call.clone()));
+            }
+
             let sender = match self.state.take_waiting_reply(&call.request_call_id) {
                 Some(s) => s,
                 None => continue,
@@ -322,9 +399,9 @@ where
             call_id: id.clone(),
             request_call_id: "".to_string(),
             destination_node_id: call.destination_node_id,
-            name: call.data.id.name,
-            f_type: call.data.id.r#type,
-            payload: call.data.payload,
+            name: call.e2e_call_data.name,
+            type_: call.e2e_call_data.type_,
+            payload: call.e2e_call_data.payload,
         })
         .await?;
         Ok(id)
@@ -338,9 +415,9 @@ where
             call_id: id.clone(),
             request_call_id: call.request_call_id,
             destination_node_id: call.destination_node_id,
-            name: call.data.id.name,
-            f_type: call.data.id.r#type,
-            payload: call.data.payload,
+            name: call.e2e_call_data.name,
+            type_: call.e2e_call_data.type_,
+            payload: call.e2e_call_data.payload,
         })
         .await?;
         Ok(id)
@@ -362,9 +439,9 @@ where
             call_id,
             request_call_id: "".to_string(),
             destination_node_id: call.destination_node_id,
-            name: call.data.id.name,
-            f_type: call.data.id.r#type,
-            payload: call.data.payload,
+            name: call.e2e_call_data.name,
+            type_: call.e2e_call_data.type_,
+            payload: call.e2e_call_data.payload,
         })
         .await?;
 
@@ -387,24 +464,16 @@ where
     pub async fn recv_reply_call(&self) -> Result<DownstreamReplyCall> {
         self.state.check_open()?;
 
-        let (s, r) = oneshot::channel();
-        if self.state.register_waiting_reply(s).is_none() {
-            return Err(Error::invalid_value("already in use this call id"));
-        }
+        let downstream_call = self.state.tx_reply.subscribe().recv().await?;
 
-        let res = r.await.map_err(|_| Error::unexpected("drop message"));
-
-        Ok(res?.into())
+        Ok(downstream_call.into())
     }
 }
 
 // private methods
-impl<T> Conn<T>
-where
-    T: TokenSource + Clone,
-{
+impl Conn {
     async fn close_waiter(&self, mut waiter: Waiter) {
-        let mut wire_close_notified = self.wire_conn.subscribe_close_notify();
+        let mut wire_close_notified = self.wire_conn.subscribe_disconnect_notify();
         tokio::select! {
             _ = wire_close_notified.recv() => {},
             _ = waiter.wait() => {},
@@ -454,11 +523,11 @@ pub mod test {
     use tokio::sync::mpsc;
     use uuid::Uuid;
 
-    pub fn new_mock_conn(_id: &str, mut mock: wire::MockMockConnection) -> Conn<StaticTokenSource> {
+    pub fn new_mock_conn(_id: &str, mut mock: wire::MockMockConnection) -> Conn {
         let (notify_close, _) = broadcast::channel(1);
         let r = notify_close.subscribe();
-        mock.expect_subscribe_close_notify()
-            .return_once(|| wire::CloseNotificationReceiver::new(r));
+        mock.expect_subscribe_disconnect_notify()
+            .return_once(|| wire::DisconnectNotificationReceiver::new(r));
 
         let (cmd_sender, _cmd_receiver) = mpsc::channel(1);
         let repo = super::super::InMemStreamRepository::new();
@@ -472,7 +541,7 @@ pub mod test {
             notify_close,
             cmd_sender,
             cancel: Cancel::new(),
-            config: ConnConfig::default(),
+            config: Arc::new(ConnConfig::default()),
         }
     }
 
@@ -507,8 +576,10 @@ pub mod test {
                     Ok(())
                 });
                 mock_conn
-                    .expect_subscribe_close_notify()
-                    .returning(move || wire::CloseNotificationReceiver::new(close_s.subscribe()));
+                    .expect_subscribe_disconnect_notify()
+                    .returning(move || {
+                        wire::DisconnectNotificationReceiver::new(close_s.subscribe())
+                    });
 
                 mock_conn.expect_upstream_open_request().returning(|req| {
                     if req.session_id == "OK" {
@@ -536,7 +607,7 @@ pub mod test {
         let repo = super::super::InMemStreamRepository::new();
         let repo = Arc::new(repo);
         let cli = ConnBuilder {
-            config: ConnConfig::<StaticTokenSource> {
+            config: ConnConfig {
                 node_id: "test_edge".to_string(),
                 project_uuid: None,
                 ping_interval: chrono::Duration::seconds(10),
@@ -554,19 +625,19 @@ pub mod test {
             .expect("no error");
 
         // OK
-        let _up = conn.open_upstream("OK", vec![]).await.unwrap();
+        let _up = conn.upstream_builder("OK").build().await.unwrap();
 
         // NG Result code
-        let res = conn.open_upstream("NG", vec![]).await;
+        let res = conn.upstream_builder("NG").build().await;
         assert!(res.is_err());
 
         // Error
-        let res = conn.open_upstream("TIMEOUT", vec![]).await;
+        let res = conn.upstream_builder("TIMEOUT").build().await;
         assert!(res.is_err());
 
         // closed
         conn.close().await.unwrap();
-        let res = conn.open_upstream("OK", vec![]).await;
+        let res = conn.upstream_builder("OK").build().await;
         assert!(res.is_err())
     }
 
@@ -599,8 +670,10 @@ pub mod test {
                     Ok(())
                 });
                 mock_conn
-                    .expect_subscribe_close_notify()
-                    .returning(move || wire::CloseNotificationReceiver::new(close_s.subscribe()));
+                    .expect_subscribe_disconnect_notify()
+                    .returning(move || {
+                        wire::DisconnectNotificationReceiver::new(close_s.subscribe())
+                    });
 
                 mock_conn.expect_subscribe_downstream().returning(|_, _| {
                     let (_s, r) = mpsc::channel(1);
@@ -648,7 +721,7 @@ pub mod test {
         let repo = super::super::InMemStreamRepository::new();
         let repo = Arc::new(repo);
         let cli = ConnBuilder {
-            config: ConnConfig::<StaticTokenSource> {
+            config: ConnConfig {
                 node_id: "test_edge".to_string(),
                 project_uuid: None,
                 ping_interval: chrono::Duration::seconds(10),
@@ -667,50 +740,42 @@ pub mod test {
 
         // OK
         let _up = conn
-            .open_downstream(
-                vec![msg::DownstreamFilter {
-                    source_node_id: "OK".to_string(),
-                    ..Default::default()
-                }],
-                vec![],
-            )
+            .downstream_builder(vec![msg::DownstreamFilter {
+                source_node_id: "OK".to_string(),
+                ..Default::default()
+            }])
+            .build()
             .await
             .unwrap();
 
         // NG Result code
         let res = conn
-            .open_downstream(
-                vec![msg::DownstreamFilter {
-                    source_node_id: "NG".to_string(),
-                    ..Default::default()
-                }],
-                vec![],
-            )
+            .downstream_builder(vec![msg::DownstreamFilter {
+                source_node_id: "NG".to_string(),
+                ..Default::default()
+            }])
+            .build()
             .await;
         assert!(res.is_err());
 
         // Error
         let res = conn
-            .open_downstream(
-                vec![msg::DownstreamFilter {
-                    source_node_id: "TIMEOUT".to_string(),
-                    ..Default::default()
-                }],
-                vec![],
-            )
+            .downstream_builder(vec![msg::DownstreamFilter {
+                source_node_id: "TIMEOUT".to_string(),
+                ..Default::default()
+            }])
+            .build()
             .await;
         assert!(res.is_err());
 
         // closed
         conn.close().await.unwrap();
         let res = conn
-            .open_downstream(
-                vec![msg::DownstreamFilter {
-                    source_node_id: "OK".to_string(),
-                    ..Default::default()
-                }],
-                vec![],
-            )
+            .downstream_builder(vec![msg::DownstreamFilter {
+                source_node_id: "OK".to_string(),
+                ..Default::default()
+            }])
+            .build()
             .await;
         assert!(res.is_err())
     }

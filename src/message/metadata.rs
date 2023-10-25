@@ -186,6 +186,8 @@ pub struct UpstreamMetadataAck {
 pub struct DownstreamMetadata {
     /// リクエストID
     pub request_id: super::RequestId,
+    /// ストリームIDエイリアス
+    pub stream_id_alias: u32,
     /// 生成元ノードID
     pub source_node_id: String,
     /// メタデータ
@@ -196,6 +198,7 @@ impl Default for DownstreamMetadata {
     fn default() -> Self {
         Self {
             request_id: 0.into(),
+            stream_id_alias: 0,
             source_node_id: "".to_string(),
             metadata: ReceivableMetadata::BaseTime(BaseTime::default()),
         }

@@ -81,7 +81,10 @@ impl From<msg::BaseTime> for BaseTime {
             name: bt.name,
             priority: bt.priority,
             elapsed_time: bt.elapsed_time.num_nanoseconds().unwrap_or(0) as u64,
-            base_time: bt.base_time.timestamp_nanos(),
+            base_time: bt.base_time.timestamp_nanos_opt().unwrap_or_else(|| {
+                log::warn!("base time overflow");
+                Default::default()
+            }),
         }
     }
 }
@@ -101,7 +104,7 @@ impl From<BaseTime> for msg::BaseTime {
 impl From<msg::DownstreamAbnormalClose> for DownstreamAbnormalClose {
     fn from(c: msg::DownstreamAbnormalClose) -> Self {
         Self {
-            stream_id: c.stream_id.as_bytes().to_vec(),
+            stream_id: c.stream_id.as_bytes().to_vec().into(),
         }
     }
 }
@@ -119,7 +122,7 @@ impl From<DownstreamAbnormalClose> for msg::DownstreamAbnormalClose {
 impl From<msg::DownstreamNormalClose> for DownstreamNormalClose {
     fn from(c: msg::DownstreamNormalClose) -> Self {
         Self {
-            stream_id: c.stream_id.as_bytes().to_vec(),
+            stream_id: c.stream_id.as_bytes().to_vec().into(),
         }
     }
 }
@@ -137,7 +140,7 @@ impl From<DownstreamNormalClose> for msg::DownstreamNormalClose {
 impl From<msg::DownstreamOpen> for DownstreamOpen {
     fn from(o: msg::DownstreamOpen) -> Self {
         Self {
-            stream_id: o.stream_id.as_bytes().to_vec(),
+            stream_id: o.stream_id.as_bytes().to_vec().into(),
             downstream_filters: o.downstream_filters,
             qos: o.qos.into(),
         }
@@ -159,7 +162,7 @@ impl From<DownstreamOpen> for msg::DownstreamOpen {
 impl From<msg::DownstreamResume> for DownstreamResume {
     fn from(r: msg::DownstreamResume) -> Self {
         Self {
-            stream_id: r.stream_id.as_bytes().to_vec(),
+            stream_id: r.stream_id.as_bytes().to_vec().into(),
             downstream_filters: r.downstream_filters,
             qos: r.qos.into(),
         }
@@ -181,7 +184,7 @@ impl From<DownstreamResume> for msg::DownstreamResume {
 impl From<msg::UpstreamAbnormalClose> for UpstreamAbnormalClose {
     fn from(c: msg::UpstreamAbnormalClose) -> Self {
         Self {
-            stream_id: c.stream_id.as_bytes().to_vec(),
+            stream_id: c.stream_id.as_bytes().to_vec().into(),
             session_id: c.session_id,
         }
     }
@@ -201,7 +204,7 @@ impl From<UpstreamAbnormalClose> for msg::UpstreamAbnormalClose {
 impl From<msg::UpstreamNormalClose> for UpstreamNormalClose {
     fn from(c: msg::UpstreamNormalClose) -> Self {
         Self {
-            stream_id: c.stream_id.as_bytes().to_vec(),
+            stream_id: c.stream_id.as_bytes().to_vec().into(),
             session_id: c.session_id.to_string(),
             total_data_points: c.total_data_points,
             final_sequence_number: c.final_sequence_number,
@@ -225,7 +228,7 @@ impl From<UpstreamNormalClose> for msg::UpstreamNormalClose {
 impl From<msg::UpstreamOpen> for UpstreamOpen {
     fn from(o: msg::UpstreamOpen) -> Self {
         Self {
-            stream_id: o.stream_id.as_bytes().to_vec(),
+            stream_id: o.stream_id.as_bytes().to_vec().into(),
             session_id: o.session_id,
             qos: o.qos.into(),
         }
@@ -247,7 +250,7 @@ impl From<UpstreamOpen> for msg::UpstreamOpen {
 impl From<msg::UpstreamResume> for UpstreamResume {
     fn from(r: msg::UpstreamResume) -> Self {
         Self {
-            stream_id: r.stream_id.as_bytes().to_vec(),
+            stream_id: r.stream_id.as_bytes().to_vec().into(),
             session_id: r.session_id,
             qos: r.qos.into(),
         }
@@ -342,6 +345,7 @@ impl From<msg::DownstreamMetadata> for DownstreamMetadata {
     fn from(m: msg::DownstreamMetadata) -> Self {
         Self {
             source_node_id: m.source_node_id,
+            stream_id_alias: m.stream_id_alias,
             request_id: m.request_id.value(),
             metadata: Some(m.metadata.into()),
             ..Default::default()
@@ -362,6 +366,7 @@ impl TryFrom<DownstreamMetadata> for msg::DownstreamMetadata {
         };
         Ok(Self {
             request_id: m.request_id.into(),
+            stream_id_alias: m.stream_id_alias,
             source_node_id: m.source_node_id,
             metadata: metadata.into(),
         })
@@ -410,7 +415,7 @@ mod test {
     macro_rules! invalid_uuid {
         ($msg:ident, $id:ident) => {
             let testee = $msg {
-                $id: vec![0, 159, 146, 150],
+                $id: vec![0, 159, 146, 150].into(),
                 ..Default::default()
             };
 

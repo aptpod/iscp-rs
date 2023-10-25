@@ -4,7 +4,7 @@ use crate::{
     sync::{Cancel, Waiter},
 };
 
-use super::{BoxedUnreliableTransport, CloseNotificationReceiver, Connection, Transport};
+use super::{BoxedUnreliableTransport, Connection, DisconnectNotificationReceiver, Transport};
 
 use log::*;
 use std::collections::{hash_map::Entry, HashMap};
@@ -19,7 +19,8 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 
 type ReplySender = oneshot::Sender<Message>;
 
-static DEFAULT_TIMEOUT: Duration = Duration::from_secs(3);
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(3);
+const BROADCAST_DOWNSTREAM_META_SIZE: usize = 1024;
 
 #[derive(Debug)]
 struct State {
@@ -208,7 +209,7 @@ pub struct Conn<W: Transport> {
     tr: Arc<W>,
     unreliable_tr: Option<Arc<BoxedUnreliableTransport>>,
     request_timeout: Duration,
-    close_notify: broadcast::Sender<()>,
+    disconnect_notify: broadcast::Sender<()>,
 }
 
 impl<T> Clone for Conn<T>
@@ -222,7 +223,7 @@ where
             tr: self.tr.clone(),
             unreliable_tr: self.unreliable_tr.clone(),
             request_timeout: self.request_timeout,
-            close_notify: self.close_notify.clone(),
+            disconnect_notify: self.disconnect_notify.clone(),
         }
     }
 }
@@ -232,8 +233,8 @@ impl<T> Connection for Conn<T>
 where
     T: Transport + 'static,
 {
-    fn subscribe_close_notify(&self) -> CloseNotificationReceiver {
-        self.subscribe_close_notify()
+    fn subscribe_disconnect_notify(&self) -> DisconnectNotificationReceiver {
+        self.subscribe_disconnect_notify()
     }
     async fn close(&self) -> Result<()> {
         self.close().await
@@ -346,8 +347,8 @@ where
     T: Transport + 'static,
 {
     let (waiter, wg) = crate::sync::WaitGroup::new();
-    let (close_notify, _) = broadcast::channel(1);
-    let (broadcast_downstream_meta, _) = broadcast::channel(1);
+    let (disconnect_notify, _) = broadcast::channel(1);
+    let (broadcast_downstream_meta, _) = broadcast::channel(BROADCAST_DOWNSTREAM_META_SIZE);
     let (broadcast_downstream_call, _) = broadcast::channel(1);
 
     let utr = unreliable_tr.map(Arc::new);
@@ -370,7 +371,7 @@ where
             broadcast_downstream_meta,
             broadcast_downstream_call,
         }),
-        close_notify,
+        disconnect_notify,
     };
 
     let conn_c = conn.clone();
@@ -402,22 +403,26 @@ where
             return Ok(());
         }
         debug!("close connection");
-        let mut close_notified = self.close_notify.subscribe();
+        let mut disconnect_notified = self.disconnect_notify.subscribe();
 
         log_err!(trace, self.cancel.notify());
-        log_err!(trace, close_notified.recv().await);
+        log_err!(trace, disconnect_notified.recv().await);
         log_err!(warn, self.tr.close().await);
         Ok(())
     }
 
-    pub fn subscribe_close_notify(&self) -> CloseNotificationReceiver {
-        CloseNotificationReceiver::new(self.close_notify.subscribe())
+    pub fn subscribe_disconnect_notify(&self) -> DisconnectNotificationReceiver {
+        DisconnectNotificationReceiver::new(self.disconnect_notify.subscribe())
     }
 
     pub async fn open_request(&self, mut msg: msg::ConnectRequest) -> Result<msg::ConnectResponse> {
         msg.request_id = self.state.next_request_id();
         debug!("open: {:?}", msg);
-        let timeout = msg.ping_timeout.clone().to_std()?;
+        let timeout = msg
+            .ping_timeout
+            .clone()
+            .to_std()
+            .map_err(Error::invalid_value)?;
 
         if timeout < Duration::from_secs(1) {
             return Err(Error::invalid_value(
@@ -425,7 +430,11 @@ where
             ));
         }
 
-        let interval = msg.ping_interval.clone().to_std()?;
+        let interval = msg
+            .ping_interval
+            .clone()
+            .to_std()
+            .map_err(Error::invalid_value)?;
         if interval < Duration::from_secs(1) {
             return Err(Error::invalid_value(
                 "ping_interval must be grater then 1 sec",
@@ -697,9 +706,9 @@ where
 
         let res = self.write_message(msg).await;
 
-        if res.is_err() {
+        if let Err(e) = res {
             self.state.remove_waiting_reply(&id);
-            return Err(res.unwrap_err());
+            return Err(e);
         }
 
         tokio::select! {
@@ -776,7 +785,7 @@ where
         self.state.remove_all_subscriber();
 
         self.state.connected.store(false, Ordering::Release);
-        log_err!(trace, self.close_notify.send(()));
+        log_err!(trace, self.disconnect_notify.send(()));
     }
 
     // read loop despatches incoming messages to subscribers
@@ -851,7 +860,7 @@ where
                 }
                 .into(),
                 Err(e) => {
-                    warn!("{}", e);
+                    warn!("send error in downstream metadata channel: {}", e);
                     continue;
                 }
             };
@@ -1611,12 +1620,12 @@ mod test {
 
         let mock_utr = Box::new(mock_utr) as super::BoxedUnreliableTransport;
 
-        let (close_notify, _) = broadcast::channel(1);
+        let (disconnect_notify, _) = broadcast::channel(1);
         let (broadcast_downstream_meta, _) = broadcast::channel(1);
         let (broadcast_downstream_call, _) = broadcast::channel(1);
         let conn = Conn {
             cancel: Cancel::new(),
-            close_notify,
+            disconnect_notify,
             state: Arc::new(State {
                 broadcast_downstream_meta,
                 broadcast_downstream_call,
@@ -1720,7 +1729,7 @@ mod test {
             }
         }
 
-        let conn = connect(MockTrans::default(), None, Some(Duration::from_secs(3)))
+        let conn = connect(MockTrans, None, Some(Duration::from_secs(3)))
             .await
             .unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(3)).await;

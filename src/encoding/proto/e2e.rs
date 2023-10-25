@@ -6,7 +6,7 @@ impl From<msg::DownstreamCall> for autogen::DownstreamCall {
             call_id: c.call_id,
             source_node_id: c.source_node_id,
             name: c.name,
-            r#type: c.f_type,
+            type_: c.type_,
             request_call_id: c.request_call_id,
             payload: c.payload,
             ..Default::default()
@@ -20,7 +20,7 @@ impl From<autogen::DownstreamCall> for msg::DownstreamCall {
             call_id: c.call_id,
             source_node_id: c.source_node_id,
             name: c.name,
-            f_type: c.r#type,
+            type_: c.type_,
             request_call_id: c.request_call_id,
             payload: c.payload,
         }
@@ -39,7 +39,7 @@ impl From<msg::UpstreamCall> for autogen::UpstreamCall {
             call_id: c.call_id,
             name: c.name,
             destination_node_id: c.destination_node_id,
-            r#type: c.f_type,
+            type_: c.type_,
             request_call_id: c.request_call_id,
             payload: c.payload,
             ..Default::default()
@@ -53,7 +53,7 @@ impl From<autogen::UpstreamCall> for msg::UpstreamCall {
             call_id: c.call_id,
             destination_node_id: c.destination_node_id,
             name: c.name,
-            f_type: c.r#type,
+            type_: c.type_,
             request_call_id: c.request_call_id,
             payload: c.payload,
         }

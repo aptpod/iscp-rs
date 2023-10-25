@@ -10,7 +10,6 @@ use crate::{
 };
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
-use futures_util::StreamExt;
 use log::*;
 use std::{
     sync::{Arc, Mutex},
@@ -45,7 +44,7 @@ pub struct Conn {
 
 impl Conn {
     async fn new(
-        new_conn: quinn::NewConnection,
+        connection: quinn::Connection,
         endpoint: quinn::Endpoint,
         mut mtu: usize,
         timeout: std::time::Duration,
@@ -59,13 +58,6 @@ impl Conn {
         let (frame_sender, frame_receiver) = mpsc::channel(1);
         let (datagrams_frame_sender, datagrams_frame_receiver) = mpsc::channel(1024);
         let (close_notify, _) = broadcast::channel(1);
-
-        let quinn::NewConnection {
-            connection,
-            uni_streams,
-            datagrams,
-            ..
-        } = new_conn;
 
         if let Some(max) = connection.max_datagram_size() {
             mtu = mtu.min(max);
@@ -94,7 +86,7 @@ impl Conn {
         tokio::spawn(async move {
             log_err!(
                 warn,
-                conn_c.read_loop(_wg, uni_streams, frame_sender).await,
+                conn_c.read_loop(_wg, frame_sender).await,
                 "in read_loop"
             );
             trace!("exit read_loop");
@@ -104,7 +96,7 @@ impl Conn {
         let _wg = wg.clone();
         tokio::spawn(async move {
             conn_c
-                .datagrams_read_loop(_wg, datagrams, datagrams_frame_sender)
+                .datagrams_read_loop(_wg, datagrams_frame_sender)
                 .await;
             trace!("exit datagrams_read_loop");
         });
@@ -228,16 +220,11 @@ impl Conn {
         log_err!(trace, self.close_notify.send(()));
     }
 
-    async fn read_loop(
-        &self,
-        _wg: WaitGroup,
-        mut stream: quinn::IncomingUniStreams,
-        sender: mpsc::Sender<Vec<u8>>,
-    ) -> Result<()> {
+    async fn read_loop(&self, _wg: WaitGroup, sender: mpsc::Sender<Vec<u8>>) -> Result<()> {
         loop {
             let stream = tokio::select! {
                 _ = self.cancel.notified() => break,
-                Some(Ok(recv)) = stream.next() => recv,
+                Ok(recv) = self.conn.accept_uni() => recv,
             };
             trace!("coming new uni stream");
 
@@ -333,16 +320,11 @@ impl Conn {
         Ok(stream.finish().await?)
     }
 
-    async fn datagrams_read_loop(
-        &self,
-        _wg: WaitGroup,
-        mut datagrams: quinn::Datagrams,
-        sender: mpsc::Sender<Vec<u8>>,
-    ) {
+    async fn datagrams_read_loop(&self, _wg: WaitGroup, sender: mpsc::Sender<Vec<u8>>) {
         loop {
             let segment = tokio::select! {
                 _ = self.cancel.notified() => break,
-                Some(Ok(segment)) = datagrams.next() => segment,
+                Ok(segment) = self.conn.read_datagram() => segment,
             };
 
             let maybe_msg = {

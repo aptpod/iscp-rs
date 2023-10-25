@@ -1,3 +1,5 @@
+//! iSCPのエラー型を定義するモジュールです。
+
 use std::fmt::Display;
 use thiserror::Error;
 use tokio::sync::{broadcast, mpsc::error as mpsc, oneshot};
@@ -5,8 +7,11 @@ use tungstenite::error as wserror;
 
 use crate::message;
 
+/// iSCPのエラーをもつ`Result`です。
 pub type Result<T, E = Error> = core::result::Result<T, E>;
-#[derive(Error, PartialEq, Debug)]
+
+/// iSCPのエラー型です。
+#[derive(Error, Clone, PartialEq, Debug)]
 pub enum Error {
     // Connect represents an error on connecting to a host. The detail why is shown in the String.
     #[error("Connect: `{0}`")]
@@ -60,9 +65,9 @@ pub enum Error {
     #[error("Max MaxSequence Number")]
     MaxSequenceNumber,
 
-    // Invalid certificate
-    #[error("invalid certificate")]
-    Certificate(#[from] webpki::Error),
+    // TLS error
+    #[error("tls error")]
+    Certificate(#[from] rustls::Error),
 
     // Certificate load failed
     #[error("invalid certificate")]
@@ -100,12 +105,6 @@ impl From<broadcast::error::RecvError> for Error {
 impl From<tokio::time::error::Elapsed> for Error {
     fn from(_e: tokio::time::error::Elapsed) -> Self {
         Error::TimeOut
-    }
-}
-
-impl From<time::OutOfRangeError> for Error {
-    fn from(e: time::OutOfRangeError) -> Self {
-        Error::invalid_value(e)
     }
 }
 
