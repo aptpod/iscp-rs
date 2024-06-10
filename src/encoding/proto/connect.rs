@@ -55,7 +55,7 @@ impl From<msg::ConnectRequest> for autogen::ConnectRequest {
         };
 
         if let Some(access_token) = r.access_token {
-            let ext = autogen::ConnectRequestExtensionFields {
+            let ext = autogen::extensions::ConnectRequestExtensionFields {
                 access_token: access_token.into(),
                 intdash: None,
             };
@@ -63,11 +63,12 @@ impl From<msg::ConnectRequest> for autogen::ConnectRequest {
         }
 
         if let Some(project_uuid) = r.project_uuid {
-            let intdash_extension_fields = autogen::IntdashExtensionFields { project_uuid };
+            let intdash_extension_fields =
+                autogen::extensions::IntdashExtensionFields { project_uuid };
             if let Some(ext) = &mut res.extension_fields {
                 ext.intdash = Some(intdash_extension_fields);
             } else {
-                res.extension_fields = Some(autogen::ConnectRequestExtensionFields {
+                res.extension_fields = Some(autogen::extensions::ConnectRequestExtensionFields {
                     access_token: "".into(),
                     intdash: Some(intdash_extension_fields),
                 });
@@ -171,7 +172,7 @@ mod test {
                 node_id: "2c2912e5-ce57-4453-a528-39850029744e".to_string(),
                 ping_interval: 10,
                 ping_timeout: 1,
-                extension_fields: Some(autogen::ConnectRequestExtensionFields {
+                extension_fields: Some(autogen::extensions::ConnectRequestExtensionFields {
                     access_token: "access_token".into(),
                     ..Default::default()
                 }),

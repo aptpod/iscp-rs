@@ -1,4 +1,8 @@
 #[rustfmt::skip]
 #[allow(clippy::all)]
-#[path = "autogen/iscp2.rs"]
-pub mod autogen;
+pub mod autogen {
+    include!("autogen/iscp2.v1.rs");
+
+    #[path = "iscp2.v1.extensions.rs"]
+    pub mod extensions;
+}

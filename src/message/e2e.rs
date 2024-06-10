@@ -47,6 +47,6 @@ pub struct DownstreamCall {
 
 impl DownstreamCall {
     pub fn is_reply(&self) -> bool {
-        !self.request_call_id.as_str().is_empty()
+        !self.request_call_id.is_empty()
     }
 }

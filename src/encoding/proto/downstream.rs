@@ -62,17 +62,14 @@ impl From<DownstreamOpenResponse> for msg::DownstreamOpenResponse {
             assigned_stream_id: uuid::Builder::from_slice(&r.assigned_stream_id)
                 .unwrap_or_else(|_| uuid::Builder::nil())
                 .into_uuid(),
-            server_time: chrono::DateTime::from_naive_utc_and_offset(
-                chrono::NaiveDateTime::from_timestamp_opt(
-                    r.server_time / 1000000000,
-                    (r.server_time % 1000000000) as u32,
-                )
-                .unwrap_or_else(|| {
-                    log::warn!("server time overflow");
-                    Default::default()
-                }),
-                chrono::Utc,
-            ),
+            server_time: chrono::DateTime::from_timestamp(
+                r.server_time / 1000000000,
+                (r.server_time % 1000000000) as u32,
+            )
+            .unwrap_or_else(|| {
+                log::warn!("server_time overflow");
+                Default::default()
+            }),
             result_code: r.result_code.into(),
             result_string: r.result_string,
         }

@@ -1,10 +1,10 @@
 use chrono::TimeZone;
 
 use crate::encoding::internal::autogen::{
-    BaseTime, DownstreamAbnormalClose, DownstreamMetadata, DownstreamMetadataAck,
-    DownstreamNormalClose, DownstreamOpen, DownstreamResume, UpstreamAbnormalClose,
-    UpstreamMetadata, UpstreamMetadataAck, UpstreamMetadataExtensionFields, UpstreamNormalClose,
-    UpstreamOpen, UpstreamResume,
+    extensions::UpstreamMetadataExtensionFields, BaseTime, DownstreamAbnormalClose,
+    DownstreamMetadata, DownstreamMetadataAck, DownstreamNormalClose, DownstreamOpen,
+    DownstreamResume, UpstreamAbnormalClose, UpstreamMetadata, UpstreamMetadataAck,
+    UpstreamNormalClose, UpstreamOpen, UpstreamResume,
 };
 use crate::message as msg;
 

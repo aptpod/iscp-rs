@@ -23,6 +23,9 @@ pub struct ConnectorConfig {
     pub datagram_send_buffer_size: Option<usize>,
     /// 輻輳制御の設定です。
     pub congestion: CongestionConfig,
+    /// 接続をタイムアウトするまでの非アクティブ時間の設定です。
+    /// [`crate::ConnConfig::ping_interval`]より長い時間を設定してください。
+    pub idle_timeout: std::time::Duration,
 }
 
 impl Default for ConnectorConfig {
@@ -32,6 +35,7 @@ impl Default for ConnectorConfig {
             host: "".to_string(),
             datagram_send_buffer_size: None,
             congestion: CongestionConfig::default(),
+            idle_timeout: std::time::Duration::from_secs(11), // ping_interval default + 1 [sec]
         }
     }
 }
@@ -61,7 +65,6 @@ pub struct Connector {
     addr: SocketAddr,
     bind_addr: SocketAddr,
     negotiation: NegotiationQuery,
-    timeout: std::time::Duration,
 }
 
 #[allow(dead_code)]
@@ -127,7 +130,6 @@ impl Default for Connector {
             addr: "127.0.0.1:8080".parse().unwrap(),
             bind_addr: "0.0.0.0:0".parse().unwrap(),
             negotiation: NegotiationQuery::default(),
-            timeout: std::time::Duration::from_secs(2),
         }
     }
 }
@@ -187,7 +189,7 @@ impl Connector {
             tr_config.datagram_send_buffer_size(value);
         }
         tr_config.max_idle_timeout(Some(
-            quinn::IdleTimeout::try_from(self.timeout).map_err(Error::invalid_value)?,
+            quinn::IdleTimeout::try_from(self.cfg.idle_timeout).map_err(Error::invalid_value)?,
         ));
         tr_config.keep_alive_interval(None);
 
@@ -232,7 +234,7 @@ impl crate::transport::Connector for Connector {
         self.exec_negotiation(&connection).await?;
         info!("negotiation complete");
 
-        let conn = Conn::new(connection, e, self.cfg.mtu, self.timeout).await?;
+        let conn = Conn::new(connection, e, self.cfg.mtu, self.cfg.idle_timeout).await?;
 
         let utr = Box::new(conn.clone());
         let utr = utr as BoxedUnreliableTransport;

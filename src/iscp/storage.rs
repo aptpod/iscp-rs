@@ -193,7 +193,7 @@ impl InMemSentStorageNoPayloadInner {
                 id: dpg.id,
                 elapsed_time: dpg
                     .data_points
-                    .get(0)
+                    .first()
                     .map(|dp| dp.elapsed_time)
                     .unwrap_or_else(chrono::Duration::zero),
             })

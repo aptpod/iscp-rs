@@ -13,11 +13,11 @@ fn gen_proto() -> Result<()> {
 }
 
 #[cfg(feature = "gen")]
-const PROTO_SRC_DIR: &str = "iscp-proto/std";
+const PROTO_SRC_DIR: &str = "iscp-proto/proto";
 
 #[cfg(feature = "gen")]
 fn gen_proto() -> Result<()> {
-    const PROTO_SRC_FILES: &str = "iscp-proto/std/**/*.proto";
+    const PROTO_SRC_FILES: &str = "iscp-proto/proto/**/*.proto";
     const AUTOGEN_DIR: &str = "src/encoding/internal/autogen";
 
     let proto_files: Vec<_> = glob::glob(PROTO_SRC_FILES)
@@ -26,9 +26,9 @@ fn gen_proto() -> Result<()> {
         .collect();
 
     if std::path::Path::new(AUTOGEN_DIR).exists() {
-        std::fs::remove_dir_all(AUTOGEN_DIR).context("remove dir")?;
+        std::fs::remove_dir_all(AUTOGEN_DIR).context("Remove dir")?;
     }
-    std::fs::create_dir(AUTOGEN_DIR).context("create dir")?;
+    std::fs::create_dir(AUTOGEN_DIR).context("Create dir")?;
 
     prost_build::Config::new()
         .out_dir(AUTOGEN_DIR)
@@ -46,9 +46,9 @@ fn gen_proto() -> Result<()> {
         .type_attribute("DataFilter", "#[derive(PartialOrd, Ord, Eq, Hash)]")
         .field_attribute("type", "#[serde(rename = \"type\")]")
         .compile_protos(&proto_files, &[PROTO_SRC_DIR])
-        .context("proto compile")?;
+        .context("Proto compile")?;
 
-    process_generated_files().context("process generated files")?;
+    process_generated_files().context("Process generated files")?;
 
     Ok(())
 }
@@ -56,13 +56,19 @@ fn gen_proto() -> Result<()> {
 #[cfg(feature = "gen")]
 // Copy proto files to dest_dir and preprocess files
 fn process_generated_files() -> Result<()> {
-    const PATH: &str = "src/encoding/internal/autogen/iscp2.rs";
+    const PATH: &[&str] = &[
+        "src/encoding/internal/autogen/iscp2.v1.rs",
+        "src/encoding/internal/autogen/iscp2.v1.extensions.rs",
+    ];
 
-    let re = regex::Regex::new("r#type").unwrap();
-    let s = std::fs::read_to_string(PATH)?;
-    let replacer = |_caps: &regex::Captures<'_>| "type_";
-    let s = re.replace_all(&s, replacer);
+    for path in PATH {
+        let re = regex::Regex::new("r#type").unwrap();
+        let s = std::fs::read_to_string(path)?;
+        let replacer = |_caps: &regex::Captures<'_>| "type_";
+        let s = re.replace_all(&s, replacer);
 
-    std::fs::write(PATH, s.as_bytes())?;
+        std::fs::write(path, s.as_bytes())?;
+    }
+
     Ok(())
 }

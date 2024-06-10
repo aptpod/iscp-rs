@@ -1,8 +1,8 @@
-use chrono::Utc;
-
+use crate::encoding::internal::autogen::extensions::{
+    UpstreamCloseRequestExtensionFields, UpstreamOpenRequestExtensionFields,
+};
 use crate::encoding::internal::autogen::{
-    UpstreamCloseRequest, UpstreamCloseRequestExtensionFields, UpstreamCloseResponse,
-    UpstreamOpenRequest, UpstreamOpenRequestExtensionFields, UpstreamOpenResponse,
+    UpstreamCloseRequest, UpstreamCloseResponse, UpstreamOpenRequest, UpstreamOpenResponse,
     UpstreamResumeRequest, UpstreamResumeResponse,
 };
 use crate::message as msg;
@@ -72,15 +72,17 @@ impl From<UpstreamOpenResponse> for msg::UpstreamOpenResponse {
     fn from(r: UpstreamOpenResponse) -> Self {
         let secs = r.server_time / 1_000_000_000;
         let nsecs = (r.server_time % 1_000_000_000) as u32;
-        let server_time = chrono::NaiveDateTime::from_timestamp_opt(secs, nsecs)
-            .unwrap_or_else(|| chrono::NaiveDateTime::from_timestamp_opt(0, 0).unwrap());
+        let server_time = chrono::DateTime::from_timestamp(secs, nsecs).unwrap_or_else(|| {
+            log::warn!("server_time overflow");
+            chrono::DateTime::default()
+        });
         Self {
             request_id: r.request_id.into(),
             assigned_stream_id: uuid::Builder::from_slice(&r.assigned_stream_id)
                 .unwrap_or_else(|_| uuid::Builder::nil())
                 .into_uuid(),
             assigned_stream_id_alias: r.assigned_stream_id_alias,
-            server_time: chrono::DateTime::<Utc>::from_naive_utc_and_offset(server_time, Utc),
+            server_time,
             result_code: r.result_code.into(),
             result_string: r.result_string,
             data_id_aliases: r.data_id_aliases,

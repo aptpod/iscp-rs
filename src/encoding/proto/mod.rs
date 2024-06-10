@@ -13,14 +13,6 @@ mod filter;
 mod metadata;
 mod ping_pong;
 mod upstream;
-pub use connect::*;
-pub use data::*;
-pub use downstream::*;
-pub use e2e::*;
-pub use filter::*;
-pub use metadata::*;
-pub use ping_pong::*;
-pub use upstream::*;
 
 /// Protocol Buffers 用エンコーダーです。
 #[derive(Clone, Copy, Debug)]
@@ -255,7 +247,7 @@ mod tests {
             pub fn test(&self) {
                 let p2m = msg::Message::try_from(self.proto.clone()).unwrap();
                 assert_eq!(p2m, self.msg.clone());
-                let m2p = autogen::Message::try_from(self.msg.clone()).unwrap();
+                let m2p = autogen::Message::from(self.msg.clone());
                 assert_eq!(m2p, self.proto.clone());
 
                 let encoded = Encoder.encode(self.msg.clone()).unwrap();
@@ -285,10 +277,12 @@ mod tests {
                         node_id: "2dda7df9-cfd8-4aba-a577-f05dec10b1d9".to_string(),
                         ping_interval: 10u32,
                         ping_timeout: 1u32,
-                        extension_fields: Some(autogen::ConnectRequestExtensionFields {
-                            access_token: "access_token".into(),
-                            intdash: None,
-                        }),
+                        extension_fields: Some(
+                            autogen::extensions::ConnectRequestExtensionFields {
+                                access_token: "access_token".into(),
+                                intdash: None,
+                            },
+                        ),
                     },
                 )),
             },
@@ -348,9 +342,11 @@ mod tests {
                         expiry_interval: chrono::Duration::seconds(1).num_seconds() as u32,
                         data_ids: vec![data_id],
                         qos: autogen::QoS::Reliable.into(),
-                        extension_fields: Some(autogen::UpstreamOpenRequestExtensionFields {
-                            persist: true,
-                        }),
+                        extension_fields: Some(
+                            autogen::extensions::UpstreamOpenRequestExtensionFields {
+                                persist: true,
+                            },
+                        ),
                     },
                 )),
             },
@@ -450,9 +446,11 @@ mod tests {
                             .into(),
                         total_data_points: 2,
                         final_sequence_number: 3,
-                        extension_fields: Some(autogen::UpstreamCloseRequestExtensionFields {
-                            close_session: true,
-                        }),
+                        extension_fields: Some(
+                            autogen::extensions::UpstreamCloseRequestExtensionFields {
+                                close_session: true,
+                            },
+                        ),
                     },
                 )),
             },
@@ -826,9 +824,9 @@ mod tests {
                         metadata: Some(autogen::upstream_metadata::Metadata::BaseTime(
                             bt.clone().into(),
                         )),
-                        extension_fields: Some(autogen::UpstreamMetadataExtensionFields {
-                            persist: true,
-                        }),
+                        extension_fields: Some(
+                            autogen::extensions::UpstreamMetadataExtensionFields { persist: true },
+                        ),
                     },
                 )),
             },
