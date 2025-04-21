@@ -1,367 +1,489 @@
-//! iSCPのライブラリを提供します。
+mod builder;
+mod down_order;
+mod down_state;
+mod downstream;
+mod e2e;
+mod flush_policy;
+pub mod metadata;
+mod misc;
+mod storage;
+mod types;
+mod upstream;
 
-use chrono::{DateTime, Utc};
-use std::{collections::HashMap, fmt::Debug, sync::Arc};
-use url::Url;
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+
+use tokio::sync::{watch, Semaphore};
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::{enc, msg, tr, wire, Error, Result, TokenSource};
+use crate::{
+    encoding::{Encoding, EncodingBuilder},
+    error::Error,
+    internal::{WaitGroup, Waiter},
+    token_source::{SharedTokenSource, TokenSource},
+    transport::{Compression, CompressionType, Connector, NegotiationParams},
+    wire::Conn as WireConn,
+};
 
-#[cfg(test)]
-use mockall::predicate::*;
+pub use builder::*;
+pub use down_state::DownstreamState;
+pub use downstream::{
+    Downstream, DownstreamConfig, DownstreamMetadataReader, DownstreamReordering,
+};
+pub use flush_policy::FlushPolicy;
+pub use misc::CallbackReturnValue;
+pub use types::*;
+pub use upstream::{
+    ReceiveAckCallback, SendDataPointsCallback, Upstream, UpstreamCloseOptions, UpstreamConfig,
+    UpstreamResumedCallback, UpstreamState,
+};
 
-mod connection;
-mod data;
-mod downstream;
-mod flush_policy;
-mod metadata;
-mod state;
-mod storage;
-mod upstream;
-pub use crate::transport::TransportKind;
-pub use connection::*;
-pub use data::*;
-pub use downstream::*;
-pub use flush_policy::*;
-pub use metadata::*;
-use state::*;
-use storage::*;
-pub use upstream::*;
-
-pub type DownstreamFilter = msg::DownstreamFilter;
-pub type QoS = msg::QoS;
-
-/// [`Conn`]のビルダーです。
-pub struct ConnBuilder {
-    config: ConnConfig,
-    sent_storage: Arc<dyn SentStorage>,
-    upstream_repository: Arc<dyn UpstreamRepository>,
-    downstream_repository: Arc<dyn DownstreamRepository>,
-}
-
-/// [`Conn`]の生成に使用するパラメーターです。
+/// Builder type for [Conn].
 #[derive(Clone)]
-pub struct ConnConfig {
-    pub address: String,
-    pub transport: TransportKind,
-    pub websocket_config: Option<tr::WebSocketConfig>,
-    pub quic_config: Option<tr::QuicConfig>,
-    pub encoding: enc::EncodingKind,
-    pub node_id: String,
-    pub project_uuid: Option<String>,
-    pub ping_interval: chrono::Duration,
-    pub ping_timeout: chrono::Duration,
-    pub token_source: Option<Arc<dyn TokenSource>>,
+pub struct ConnBuilder<C> {
+    connector: C,
+    encoding: Encoding,
+    compression: Compression,
+    node_id: String,
+    project_uuid: Option<Uuid>,
+    ping_interval: Duration,
+    ping_timeout: Duration,
+    response_message_timeout: Duration,
+    token_source: Option<SharedTokenSource>,
+    channel_size: usize,
 }
 
-impl Default for ConnConfig {
-    fn default() -> Self {
+impl<C: Connector> ConnBuilder<C> {
+    pub fn new(connector: C) -> Self {
         Self {
-            address: "localhost:8080".to_string(),
-            transport: TransportKind::Quic,
-            websocket_config: None,
-            quic_config: None,
-            encoding: enc::EncodingKind::Proto,
+            connector,
+            encoding: EncodingBuilder::default().build(),
+            compression: Compression::new(),
             node_id: String::new(),
             project_uuid: None,
-            ping_interval: chrono::Duration::seconds(10),
-            ping_timeout: chrono::Duration::seconds(1),
+            ping_interval: Duration::from_secs(10),
+            ping_timeout: Duration::from_secs(1),
+            response_message_timeout: Duration::from_secs(3),
             token_source: None,
-        }
-    }
-}
-
-impl ConnBuilder {
-    /// コネクションのビルダーを作成します
-    pub fn new(address: &str, transport: TransportKind) -> Self {
-        Self::with_config(address, transport, &ConnConfig::default())
-    }
-
-    /// `ConnConfig`を元にコネクションのビルダーを作成します。
-    /// `ConnConfig`の`address`と`transport`は無視され、このコンストラクタに渡した引数が使われます。
-    pub fn with_config(address: &str, transport: TransportKind, config: &ConnConfig) -> Self {
-        let mut config = config.clone();
-        config.address = address.into();
-        config.transport = transport;
-        Self {
-            config,
-            upstream_repository: Arc::new(InMemStreamRepository::new()),
-            downstream_repository: Arc::new(InMemStreamRepository::new()),
-            sent_storage: Arc::new(InMemSentStorage::new()),
+            channel_size: 1024,
         }
     }
 
-    pub fn websocket_config(mut self, websocket_config: Option<tr::WebSocketConfig>) -> Self {
-        self.config.websocket_config = websocket_config;
+    pub async fn build(mut self) -> Result<Conn, Error> {
+        if rustls::crypto::CryptoProvider::get_default().is_none() {
+            let _ = rustls::crypto::ring::default_provider().install_default();
+        }
+        if self.compression.window_bits().is_some() && !C::_compat_with_context_takeover() {
+            return Err(Error::Unexpected(
+                "using window bits for unsupported transport".into(),
+            ));
+        }
+
+        let wire_conn = self.connect().await?;
+
+        Ok(Conn {
+            inner: Arc::new(ConnInner::new(wire_conn, self)),
+        })
+    }
+
+    pub fn encoding(mut self, encoding: Encoding) -> Self {
+        self.encoding = encoding;
         self
     }
 
-    pub fn quic_config(mut self, quic_config: Option<tr::QuicConfig>) -> Self {
-        self.config.quic_config = quic_config;
-        self
-    }
-
-    pub fn encoding(mut self, encoding: enc::EncodingKind) -> Self {
-        self.config.encoding = encoding;
+    pub fn compression(mut self, compression: Compression) -> Self {
+        self.compression = compression;
         self
     }
 
     pub fn node_id<S: ToString>(mut self, node_id: S) -> Self {
-        self.config.node_id = node_id.to_string();
+        self.node_id = node_id.to_string();
         self
     }
 
-    pub fn project_uuid<S: ToString>(mut self, project_uuid: S) -> Self {
-        self.config.project_uuid = Some(project_uuid.to_string());
+    pub fn project_uuid<T: Into<Option<Uuid>>>(mut self, project_uuid: T) -> Self {
+        self.project_uuid = project_uuid.into();
         self
     }
 
-    pub fn ping_interval(mut self, d: chrono::Duration) -> Self {
-        self.config.ping_interval = d;
+    pub fn ping_interval(mut self, ping_interval: Duration) -> Self {
+        self.ping_interval = ping_interval;
         self
     }
 
-    pub fn ping_timeout(mut self, d: chrono::Duration) -> Self {
-        self.config.ping_timeout = d;
+    pub fn ping_timeout(mut self, ping_timeout: Duration) -> Self {
+        self.ping_timeout = ping_timeout;
         self
     }
 
-    pub fn token_source(mut self, token_source: Option<Arc<dyn TokenSource>>) -> Self {
-        self.config.token_source = token_source;
+    /// Timeout for waiting message response.
+    pub fn response_message_timeout(mut self, response_message_timeout: Duration) -> Self {
+        self.response_message_timeout = response_message_timeout;
         self
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn upstream_repository<U>(mut self, upstream_repository: U) -> Self
-    where
-        U: UpstreamRepository + 'static,
-    {
-        self.upstream_repository = Arc::new(upstream_repository);
+    pub fn token_source<T: Into<Option<TS>>, TS: TokenSource>(mut self, token_source: T) -> Self {
+        self.token_source = token_source
+            .into()
+            .map(|token_source| SharedTokenSource::new(token_source));
         self
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn downstream_repository<D>(mut self, downstream_repository: D) -> Self
-    where
-        D: DownstreamRepository + 'static,
-    {
-        self.downstream_repository = Arc::new(downstream_repository);
-        self
-    }
+    async fn connect(&mut self) -> Result<WireConn, Error> {
+        let transport = self.connector.connect(self.negotiation_params()).await?;
+        let conn = WireConn::new::<C>(
+            transport,
+            self.encoding.clone(),
+            self.compression.clone(),
+            self.channel_size,
+            self.response_message_timeout,
+            self.ping_interval,
+            self.ping_timeout,
+        );
 
-    #[allow(dead_code)]
-    pub(crate) fn sent_storage<S>(mut self, sent_storage: S) -> Self
-    where
-        S: SentStorage + 'static,
-    {
-        self.sent_storage = Arc::new(sent_storage);
-        self
-    }
-
-    pub async fn connect(self) -> Result<Conn> {
-        let connector = self.connect_wire().await?;
-        self.connect_with_connector(connector).await
-    }
-
-    async fn connect_wire(&self) -> Result<wire::BoxedConnector> {
-        let tr_connector: tr::BoxedConnector = match self.config.transport {
-            TransportKind::WebSocket => {
-                let cfg = self.config.websocket_config.clone().unwrap_or_default();
-
-                let scheme = if cfg.enable_tls { "https" } else { "http" };
-                let (host, port) = parse_host_and_port(scheme, &self.config.address)?;
-
-                tr::WebSocketConnector::new(host, Some(port), cfg).into()
-            }
-            TransportKind::Quic => {
-                let cfg = self.config.quic_config.clone().unwrap_or_default();
-
-                let (host, port) = parse_host_and_port("https", &self.config.address)?;
-                let sock_addr = tokio::net::lookup_host(format!("{}:{}", host, port))
-                    .await
-                    .map_err(Error::connect)?
-                    .min() // Prefer v4 address
-                    .ok_or_else(|| Error::connect("valid address not found"))?;
-
-                tr::QuicConnector::new(sock_addr, cfg).into()
-            }
+        let Ok(ping_interval) = self.ping_interval.as_secs().try_into() else {
+            return Err(Error::invalid_value("invalid ping_interval"));
         };
-
-        Ok(Box::new(wire::new_connector(
-            tr_connector,
-            self.config.encoding,
-        )))
-    }
-
-    async fn connect_with_connector(self, connector: wire::BoxedConnector) -> Result<Conn> {
-        // Validate
-        if self.config.node_id.is_empty() {
-            return Err(Error::invalid_value("need any edge id"));
+        if ping_interval == 0 {
+            return Err(Error::invalid_value("invalid ping_interval"));
         }
-        if self.config.ping_interval.num_seconds() < 1i64 {
-            return Err(Error::invalid_value("must ping interval >= 1 sec"));
-        }
-        if self.config.ping_timeout.num_seconds() < 1i64 {
-            return Err(Error::invalid_value("must ping timeout >= 1 sec"));
+        let Ok(ping_timeout) = self.ping_timeout.as_secs().try_into() else {
+            return Err(Error::invalid_value("invalid ping_timeout"));
+        };
+        if ping_timeout == 0 {
+            return Err(Error::invalid_value("invalid ping_timeout"));
         }
 
-        // TODO: config timeout for this connect()
-        let wire_conn = connector.connect(None).await?;
+        let intdash_extension_fields =
+            self.project_uuid
+                .map(|uuid| crate::message::extensions::IntdashExtensionFields {
+                    project_uuid: uuid.to_string(),
+                });
+        let extension_fields = if let Some(token_source) = &self.token_source {
+            let access_token =
+                tokio::time::timeout(self.response_message_timeout, token_source.token())
+                    .await
+                    .map_err(|_| Error::timeout("token source"))??;
 
-        let token = if let Some(ts) = &self.config.token_source {
-            Some(ts.token().await?)
+            Some(crate::message::extensions::ConnectRequestExtensionFields {
+                access_token: access_token.0,
+                intdash: intdash_extension_fields,
+            })
+        } else if intdash_extension_fields.is_some() {
+            Some(crate::message::extensions::ConnectRequestExtensionFields {
+                access_token: "".into(),
+                intdash: intdash_extension_fields,
+            })
         } else {
             None
         };
 
-        let resp = wire_conn
-            .open_request(msg::ConnectRequest {
-                node_id: self.config.node_id.clone(),
-                protocol_version: crate::ISCP_VERSION.to_string(),
-                access_token: token.map(msg::AccessToken::new),
-                ping_interval: self.config.ping_interval,
-                ping_timeout: self.config.ping_timeout,
-                project_uuid: self.config.project_uuid.clone(),
-                ..Default::default()
-            })
-            .await?;
-        verify_connect_response(resp)?;
+        let connect_request = crate::message::ConnectRequest {
+            protocol_version: crate::ISCP_VERSION.into(),
+            node_id: self.node_id.clone(),
+            ping_interval,
+            ping_timeout,
+            extension_fields,
+            ..Default::default()
+        };
+        let _response = conn.request_message_need_response(connect_request).await?;
 
-        let conn = Conn::new(
-            wire_conn,
-            self.sent_storage.clone(),
-            self.upstream_repository.clone(),
-            self.downstream_repository.clone(),
-            self.config,
-        );
+        log::info!("successfully received connect response message");
 
         Ok(conn)
     }
+
+    fn negotiation_params(&self) -> NegotiationParams {
+        let encoding_name = self.encoding.name().into();
+
+        if !self.compression.enabled() {
+            NegotiationParams {
+                encoding_name,
+                compression_type: None,
+                compression_level: None,
+                compression_window_bits: None,
+            }
+        } else {
+            NegotiationParams {
+                encoding_name,
+                compression_type: if self.compression.window_bits().is_none() {
+                    Some(CompressionType::PerMessage)
+                } else {
+                    Some(CompressionType::ContextTakeover)
+                },
+                compression_level: self.compression.level(),
+                compression_window_bits: self.compression.window_bits(),
+            }
+        }
+    }
 }
 
-fn parse_host_and_port(scheme: &str, address: &str) -> Result<(String, u16)> {
-    if let Ok(url) = Url::parse(&format!("{}://{}", scheme, address)) {
-        let port = url
-            .port_or_known_default()
-            .expect("scheme must be 'http' or 'https'");
-        if let Some(host) = url.host_str() {
-            return Ok((host.to_string(), port));
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub(crate) enum ConnectionState {
+    Connected,
+    Reconnecting,
+    Closing,
+    Closed,
+}
+
+/// iSCP connection.
+#[derive(Clone)]
+pub struct Conn {
+    inner: Arc<ConnInner>,
+}
+
+impl std::fmt::Debug for Conn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Conn").finish()
+    }
+}
+
+impl Conn {
+    pub async fn open_upstream_with_config<T: Into<Arc<UpstreamConfig>>>(
+        &self,
+        upstream_config: T,
+    ) -> Result<Upstream, Error> {
+        self.check_close()?;
+
+        let (upstream, ct) = Upstream::new(
+            upstream_config.into(),
+            self.inner.shared_wire_conn.clone(),
+            self.inner.stream_wait_group(),
+        )
+        .await?;
+        self.inner.push_stream_ct(ct);
+        Ok(upstream)
+    }
+
+    pub fn upstream_builder<S: ToString>(&self, session_id: S) -> UpstreamBuilder {
+        let config = UpstreamConfig {
+            session_id: session_id.to_string(),
+            ..Default::default()
+        };
+        UpstreamBuilder {
+            conn: self.clone(),
+            config,
         }
     }
 
-    Err(Error::invalid_value("invalid address"))
-}
+    pub async fn open_downstream_with_config<T: Into<Arc<DownstreamConfig>>>(
+        &self,
+        downstream_config: T,
+    ) -> Result<(Downstream, DownstreamMetadataReader), Error> {
+        self.check_close()?;
 
-fn verify_connect_response(resp: msg::ConnectResponse) -> Result<()> {
-    match resp.result_code {
-        msg::ResultCode::Succeeded => Ok(()),
-        msg::ResultCode::IncompatibleVersion => Ok(()),
-        _ => Err(resp.into()),
+        let (downstream, metadata_receiver, ct) = Downstream::new(
+            downstream_config.into(),
+            self.inner.shared_wire_conn.clone(),
+            self.inner.stream_wait_group(),
+            self.inner.channel_size,
+        )
+        .await?;
+        self.inner.push_stream_ct(ct);
+        Ok((downstream, metadata_receiver))
     }
-}
 
-#[doc(hidden)]
-/// アップストリームの情報です。
-#[derive(Clone, Default, Debug)]
-pub struct UpstreamInfo {
-    pub session_id: String,
-    pub stream_id: Uuid,
-    pub stream_id_alias: u32,
-    pub id_alias_map: IdAliasMap,
-    pub flush_policy: FlushPolicy,
-    pub sequence_number: u32,
-    pub data_point_count: u64,
-    pub qos: msg::QoS,
-    pub server_time: DateTime<Utc>,
-}
-
-#[doc(hidden)]
-/// アップストリーム永続化用のインターフェースです。
-pub trait UpstreamRepository: Sync + Send {
-    /// アップストリームを永続化します。
-    fn save_upstream(&self, info: &UpstreamInfo) -> Result<()>;
-    /// アップストリームを取得します。
-    fn find_upstream_by_id(&self, uuid: Uuid) -> Result<UpstreamInfo>;
-    /// アップストリームを削除します。
-    fn remove_upstream_by_id(&self, uuid: Uuid) -> Result<()>;
-}
-
-#[doc(hidden)]
-pub type BoxedUpstreamRepository = Box<dyn UpstreamRepository>;
-
-impl<R: UpstreamRepository> UpstreamRepository for Box<R> {
-    fn save_upstream(&self, info: &UpstreamInfo) -> Result<()> {
-        (**self).save_upstream(info)
+    pub fn downstream_builder(&self, filters: Vec<DownstreamFilter>) -> DownstreamBuilder {
+        let config = DownstreamConfig {
+            filters,
+            ..Default::default()
+        };
+        DownstreamBuilder {
+            conn: self.clone(),
+            config,
+        }
     }
-    fn find_upstream_by_id(&self, uuid: Uuid) -> Result<UpstreamInfo> {
-        (**self).find_upstream_by_id(uuid)
-    }
-    fn remove_upstream_by_id(&self, uuid: Uuid) -> Result<()> {
-        (**self).remove_upstream_by_id(uuid)
-    }
-}
 
-impl<R: UpstreamRepository> UpstreamRepository for Arc<R> {
-    fn save_upstream(&self, info: &UpstreamInfo) -> Result<()> {
-        (**self).save_upstream(info)
-    }
-    fn find_upstream_by_id(&self, uuid: Uuid) -> Result<UpstreamInfo> {
-        (**self).find_upstream_by_id(uuid)
-    }
-    fn remove_upstream_by_id(&self, uuid: Uuid) -> Result<()> {
-        (**self).remove_upstream_by_id(uuid)
-    }
-}
+    pub async fn close(&self) -> Result<(), Error> {
+        let Ok(_permit) = self.inner.close_semaphore.acquire().await else {
+            return Ok(());
+        };
+        let _ = self.inner.tx_state.send(ConnectionState::Closing);
 
-#[doc(hidden)]
-/// ダウンストリームの情報です。
-#[allow(dead_code)] // TODO: remove me
-#[derive(Clone, Default, Debug)]
-pub struct DownstreamInfo {
-    ack_id: u32,
-    stream_id: Uuid,
-    upstreams_info: HashMap<u32, msg::UpstreamInfo>,
-    data_ids: HashMap<u32, msg::DataId>,
-    source_node_ids: Vec<String>,
-    qos: msg::QoS,
-    last_recv_sequences: HashMap<msg::UpstreamInfo, u32>,
-    server_time: chrono::DateTime<chrono::Utc>,
-}
+        // Wait for close of streams
+        let (stream_ct, stream_waiter) = self.inner.take_stream_waiter();
+        for ct in stream_ct.into_iter() {
+            ct.cancel();
+        }
+        stream_waiter.wait().await;
 
-#[doc(hidden)]
-/// ダウンストリーム永続化用のインターフェースです。
-pub trait DownstreamRepository: Sync + Send {
-    /// ダウンストリームを永続化します。
-    fn save_downstream(&self, info: &DownstreamInfo) -> Result<()>;
-    /// ダウンストリームを取得します。
-    fn find_downstream_by_id(&self, uuid: Uuid) -> Result<DownstreamInfo>;
-    /// ダウンストリームを削除します。
-    fn remove_downstream_by_id(&self, uuid: Uuid) -> Result<()>;
-}
-
-#[doc(hidden)]
-pub type BoxedDownstreamRepository = Box<dyn DownstreamRepository>;
-
-impl<R: DownstreamRepository> DownstreamRepository for Box<R> {
-    fn save_downstream(&self, info: &DownstreamInfo) -> Result<()> {
-        (**self).save_downstream(info)
+        // Wait for reconnection loop exit
+        self.inner.ct.cancel();
+        self.inner.waiter.wait().await;
+        self.inner.close_semaphore.close();
+        Ok(())
     }
-    fn find_downstream_by_id(&self, uuid: Uuid) -> Result<DownstreamInfo> {
-        (**self).find_downstream_by_id(uuid)
+
+    /// Wait for the given connection state.
+    async fn wait_for_state(&self, state: ConnectionState) -> Result<(), Error> {
+        let mut rx = self.inner.rx_state.clone();
+        let s = rx
+            .wait_for(|s| *s == state || *s == ConnectionState::Closed)
+            .await
+            .map_err(|_| Error::ConnectionClosed)?;
+        if *s == state {
+            Ok(())
+        } else {
+            // Returns error if closed while waiting states other than Closed state.
+            Err(Error::ConnectionClosed)
+        }
     }
-    fn remove_downstream_by_id(&self, uuid: Uuid) -> Result<()> {
-        (**self).remove_downstream_by_id(uuid)
+
+    fn check_close(&self) -> Result<(), Error> {
+        if self.inner.close_semaphore.available_permits() == 0 || self.inner.ct.is_cancelled() {
+            Err(Error::ConnectionClosed)
+        } else {
+            Ok(())
+        }
     }
 }
 
-impl<R: DownstreamRepository> DownstreamRepository for Arc<R> {
-    fn save_downstream(&self, info: &DownstreamInfo) -> Result<()> {
-        (**self).save_downstream(info)
+struct ConnInner {
+    shared_wire_conn: SharedWireConn,
+    ct: CancellationToken,
+    waiter: Waiter,
+    stream_ct: Mutex<Vec<CancellationToken>>,
+    stream_close_waiter: Mutex<Option<(Waiter, WaitGroup)>>,
+    close_semaphore: Semaphore,
+    tx_state: watch::Sender<ConnectionState>,
+    rx_state: watch::Receiver<ConnectionState>,
+    channel_size: usize,
+}
+
+impl ConnInner {
+    fn new<C: Connector>(wire_conn: WireConn, builder: ConnBuilder<C>) -> Self {
+        let ct = CancellationToken::new();
+        let (waiter, wg) = Waiter::new();
+        let (tx_wire_conn, rx_wire_conn) = watch::channel(wire_conn.clone());
+        let (tx_state, rx_state) = watch::channel(ConnectionState::Connected);
+        let channel_size = builder.channel_size;
+
+        let ct_clone = ct.clone();
+        let tx_state_clone = tx_state.clone();
+        tokio::spawn(async move {
+            reconnection_loop(wire_conn, tx_wire_conn, &tx_state_clone, builder, ct_clone).await;
+            log::debug!("exit reconnection loop");
+            let _ = tx_state_clone.send(ConnectionState::Closed);
+            std::mem::drop(wg);
+        });
+
+        ConnInner {
+            shared_wire_conn: SharedWireConn(rx_wire_conn),
+            ct,
+            waiter,
+            stream_ct: Mutex::new(Vec::new()),
+            stream_close_waiter: Mutex::new(Some(Waiter::new())),
+            close_semaphore: Semaphore::new(1),
+            tx_state,
+            rx_state,
+            channel_size,
+        }
     }
-    fn find_downstream_by_id(&self, uuid: Uuid) -> Result<DownstreamInfo> {
-        (**self).find_downstream_by_id(uuid)
+
+    fn wire_conn(&self) -> Result<WireConn, Error> {
+        let wire_conn = self.shared_wire_conn.get();
+        if !wire_conn.is_connected() {
+            return Err(Error::ConnectionClosed);
+        }
+        Ok(wire_conn)
     }
-    fn remove_downstream_by_id(&self, uuid: Uuid) -> Result<()> {
-        (**self).remove_downstream_by_id(uuid)
+
+    fn push_stream_ct(&self, ct: CancellationToken) {
+        self.stream_ct.lock().unwrap().push(ct);
     }
+
+    fn stream_wait_group(&self) -> WaitGroup {
+        let guard = self.stream_close_waiter.lock().unwrap();
+        guard.as_ref().unwrap().1.clone()
+    }
+
+    fn take_stream_waiter(&self) -> (Vec<CancellationToken>, Waiter) {
+        (
+            std::mem::take(&mut *self.stream_ct.lock().unwrap()),
+            self.stream_close_waiter.lock().unwrap().take().unwrap().0,
+        )
+    }
+}
+
+async fn reconnection_loop<C: Connector>(
+    mut wire_conn: WireConn,
+    tx_wire_conn: watch::Sender<WireConn>,
+    tx_state: &watch::Sender<ConnectionState>,
+    mut builder: ConnBuilder<C>,
+    ct: CancellationToken,
+) {
+    loop {
+        let _ = tx_state.send(ConnectionState::Connected);
+
+        tokio::select! {
+            _ = wire_conn.cancelled() => (),
+            _ = ct.cancelled() => {
+                let msg = crate::message::Disconnect {
+                    result_code: crate::message::ResultCode::Succeeded.into(),
+                    result_string: "OK".into(),
+                    ..Default::default()
+                };
+                if let Err(e) = wire_conn.send_message(msg).await {
+                    log::warn!("cannot send disconnect message: {}", e);
+                }
+                if let Err(e) = wire_conn.close().await {
+                    log::error!("close error: {}", e);
+                }
+                return;
+            }
+        }
+
+        let mut waiter = misc::ReconnectWaiter::new();
+        let _ = tx_state.send(ConnectionState::Reconnecting);
+
+        loop {
+            waiter.wait().await;
+
+            let result = tokio::select! {
+                result = builder.connect() => result,
+                _ = ct.cancelled() => {
+                    return;
+                }
+            };
+            match result {
+                Ok(c) => {
+                    wire_conn = c.clone();
+                    if tx_wire_conn.send(c).is_err() {
+                        return;
+                    }
+                    break;
+                }
+                Err(e) => {
+                    log::info!("reconnection failed: {}", e);
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct SharedWireConn(watch::Receiver<WireConn>);
+
+impl SharedWireConn {
+    pub fn get(&self) -> WireConn {
+        self.0.borrow().clone()
+    }
+
+    pub async fn get_updated(&mut self) -> Result<WireConn, Error> {
+        if self.0.changed().await.is_err() {
+            return Err(Error::ConnectionClosed);
+        }
+        Ok(self.0.borrow().clone())
+    }
+
+    // pub async fn get_connected(mut self) -> Result<WireConn, Error> {
+    //     self.0
+    //         .wait_for(|wire_conn| wire_conn.is_connected())
+    //         .await
+    //         .map(|wire_conn| wire_conn.clone())
+    //         .map_err(|_| Error::ConnectionClosed)
+    // }
 }

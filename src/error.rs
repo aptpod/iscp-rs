@@ -1,138 +1,77 @@
-//! iSCPのエラー型を定義するモジュールです。
+use std::borrow::Cow;
 
-use std::fmt::Display;
 use thiserror::Error;
-use tokio::sync::{broadcast, mpsc::error as mpsc, oneshot};
-use tungstenite::error as wserror;
 
-use crate::message;
-
-/// iSCPのエラーをもつ`Result`です。
-pub type Result<T, E = Error> = core::result::Result<T, E>;
-
-/// iSCPのエラー型です。
-#[derive(Error, Clone, PartialEq, Debug)]
+/// iSCP error type.
+#[non_exhaustive]
+#[derive(Error, Debug)]
 pub enum Error {
-    // Connect represents an error on connecting to a host. The detail why is shown in the String.
-    #[error("Connect: `{0}`")]
-    Connect(String),
+    #[error("{0}")]
+    Transport(#[from] crate::transport::TransportError),
 
-    // ConnectionClosed represents connection had already been closed.
-    #[error("ConnectionClosed")]
-    ConnectionClosed(String),
+    #[error("{0}")]
+    TokenSource(#[from] crate::token_source::TokenSourceError),
 
-    // TimeOut represents the request was failed because timeout.
-    #[error("TimeOut")]
-    TimeOut,
-
-    // StreamNotFound represents the target stream wat not found.
-    #[error("Stream Not Found")]
-    StreamNotFound,
-
-    // Unexpected represents the unexpected error occurred. The detail why is shown in the String.
-    // This error is almost internal client error.
-    #[error("Unexpected: `{0}`")]
-    Unexpected(String),
-
-    // Encode represents the error occurred while encoding message. The detail why is shown in the String.
-    // This error is almost internal client error.
-    #[error("Encode: `{0}`")]
-    Encode(String),
-
-    // Decode represents the error occurred while encoding message. The detail why is shown in the String.
-    // If this error occurred, the connecting broker may not be comply with ISCP protocol.
-    #[error("Decode: `{0}`")]
-    MalformedMessage(String),
-
-    // FailedMessage represents the error in the ISCP protocol.
-    #[error("Failed Message (ResultCode: {code:?}, detail: {detail:?})")]
+    /// Receive result code that is not succeeded.
+    #[error("result code is: {result_code:?}, detail: {detail:?})")]
     FailedMessage {
-        code: message::ResultCode,
+        result_code: crate::message::ResultCode,
         detail: String,
     },
 
-    // InvalidValue represents the value is invalid. The detail why is shown in the String.
-    #[error("Invalid Value `{0}`")]
-    InvalidValue(String),
+    /// The request was failed because timeout.
+    #[error("timeout {0}")]
+    Timeout(Cow<'static, str>),
 
-    // MaxDataPointCount represents the current data point count was reached to max.
-    // If more data points should be sent using upstream, current upstream must be closed and new upstream must be opened.
-    #[error("Max Data Point Count")]
-    MaxDataPointCount,
+    /// Connection had already been closed.
+    #[error("connection closed")]
+    ConnectionClosed,
 
-    // MaxSequenceNumber represents the current sequence number was reached to max.
-    // If more data points should be sent using upstream, current upstream must be closed and new upstream must be opened.
-    #[error("Max MaxSequence Number")]
-    MaxSequenceNumber,
+    /// Operation is cancelled because of closed.
+    #[error("cancelled by close")]
+    CancelledByClose,
 
-    // TLS error
-    #[error("tls error")]
-    Certificate(#[from] rustls::Error),
+    /// The stream had already been closed.
+    #[error("stream closed")]
+    StreamClosed,
 
-    // Certificate load failed
-    #[error("invalid certificate")]
-    CertificateLoad(String),
-}
+    ///The unexpected error occurred.
+    #[error("unexpected: {0}")]
+    Unexpected(Cow<'static, str>),
 
-impl From<wserror::Error> for Error {
-    fn from(e: wserror::Error) -> Self {
-        use wserror::Error as err;
-        match e {
-            err::AlreadyClosed | err::ConnectionClosed => Self::ConnectionClosed("".into()),
-            _ => Self::unexpected(e),
-        }
-    }
-}
+    /// The value is invalid. The detail why is shown in the String.
+    #[error("invalid value `{0}`")]
+    InvalidValue(Cow<'static, str>),
 
-impl<T> From<mpsc::SendError<T>> for Error {
-    fn from(e: mpsc::SendError<T>) -> Self {
-        Error::Unexpected(e.to_string()) // channel closed
-    }
-}
-
-impl From<oneshot::error::RecvError> for Error {
-    fn from(e: oneshot::error::RecvError) -> Self {
-        Error::unexpected(e) // channel closed
-    }
-}
-
-impl From<broadcast::error::RecvError> for Error {
-    fn from(e: broadcast::error::RecvError) -> Self {
-        Error::unexpected(e)
-    }
-}
-
-impl From<tokio::time::error::Elapsed> for Error {
-    fn from(_e: tokio::time::error::Elapsed) -> Self {
-        Error::TimeOut
-    }
+    /// Reordering error
+    #[error("cannot wait chunk in reordering, the upstream id is `{0}`")]
+    Reordering(uuid::Uuid),
 }
 
 impl Error {
-    pub fn unexpected<T: Display>(s: T) -> Self {
-        Error::Unexpected(s.to_string())
+    pub(crate) fn can_retry(&self) -> bool {
+        matches!(
+            self,
+            Error::Transport(..) | Error::ConnectionClosed | Error::CancelledByClose
+        )
     }
 
-    pub fn invalid_value<T: Display>(s: T) -> Self {
-        Error::InvalidValue(s.to_string())
-    }
-
-    pub fn failed_message<T: Display>(code: message::ResultCode, s: T) -> Self {
-        Error::FailedMessage {
-            code,
-            detail: s.to_string(),
+    pub(crate) fn result_code(&self) -> Option<crate::message::ResultCode> {
+        match self {
+            Error::FailedMessage { result_code, .. } => Some(*result_code),
+            _ => None,
         }
     }
 
-    pub fn connect<T: Display>(s: T) -> Self {
-        Error::Connect(s.to_string())
+    pub(crate) fn timeout<T: Into<Cow<'static, str>>>(msg: T) -> Self {
+        Self::Timeout(msg.into())
     }
 
-    pub fn encode<T: ToString>(s: T) -> Self {
-        Error::Encode(s.to_string())
+    pub(crate) fn unexpected<T: Into<Cow<'static, str>>>(msg: T) -> Self {
+        Self::Unexpected(msg.into())
     }
 
-    pub fn malformed_message<T: ToString>(s: T) -> Self {
-        Error::MalformedMessage(s.to_string())
+    pub(crate) fn invalid_value<T: Into<Cow<'static, str>>>(msg: T) -> Self {
+        Self::InvalidValue(msg.into())
     }
 }

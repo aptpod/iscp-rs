@@ -1,33 +1,32 @@
 use std::time::Duration;
 
-/// アップストリームのフラッシュの方法について定義します。
+/// Flush policy for iSCP upstream.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum FlushPolicy {
-    /// データポイントが書き込まれる内部バッファをフラッシュしないポリシーです。
     None,
-    /// データポイントが書き込まれる内部バッファを時間間隔でフラッシュするポリシーです。
-    IntervalOnly { interval: Duration },
-    /// データポイントが書き込まれる内部バッファを、指定したバッファサイズを超えた時にフラッシュするポリシーです。
-    BufferSizeOnly { buffer_size: u64 },
-    /// データポイントが書き込まれる内部バッファを、時間間隔または指定したバッファサイズのいずれかの条件を満たした時にフラッシュするポリシーです。
+    IntervalOnly {
+        interval: Duration,
+    },
+    BufferSizeOnly {
+        buffer_size: u64,
+    },
     IntervalOrBufferSize {
         interval: Duration,
         buffer_size: u64,
     },
-    /// データポイントが内部バッファに書き込まれたタイミングで即時フラッシュするポリシーです。
     Immediately,
 }
 
 impl Default for FlushPolicy {
     fn default() -> Self {
         Self::IntervalOnly {
-            interval: Duration::from_millis(10),
+            interval: Duration::from_millis(100),
         }
     }
 }
 
 impl FlushPolicy {
-    pub(super) fn interval(&self) -> Option<Duration> {
+    pub fn interval(&self) -> Option<Duration> {
         match self {
             Self::IntervalOnly { interval } => Some(*interval),
             Self::IntervalOrBufferSize { interval, .. } => Some(*interval),
@@ -35,11 +34,30 @@ impl FlushPolicy {
         }
     }
 
-    pub(super) fn buffer_size(&self) -> Option<u64> {
+    pub fn buffer_size(&self) -> Option<u64> {
         match self {
             Self::BufferSizeOnly { buffer_size } => Some(*buffer_size),
             Self::IntervalOrBufferSize { buffer_size, .. } => Some(*buffer_size),
             _ => None,
+        }
+    }
+
+    pub(crate) async fn sleep_by_interval(&self) {
+        if let Some(interval) = self.interval() {
+            tokio::time::sleep(interval).await;
+        } else {
+            std::future::pending().await
+        }
+    }
+
+    pub(crate) fn need_flush(&self, current_buffer_size: usize) -> bool {
+        match self {
+            Self::Immediately => true,
+            Self::BufferSizeOnly { buffer_size } => (*buffer_size as usize) <= current_buffer_size,
+            Self::IntervalOrBufferSize { buffer_size, .. } => {
+                (*buffer_size as usize) <= current_buffer_size
+            }
+            _ => false,
         }
     }
 }

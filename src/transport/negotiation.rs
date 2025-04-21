@@ -1,37 +1,77 @@
-use crate::error::Error;
 use bytes::BufMut;
-use serde::{Deserialize, Serialize};
 
-#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
-pub struct NegotiationQuery {
-    pub enc: String,
+use crate::encoding;
+use crate::transport::TransportError;
+
+#[derive(Clone, Debug, serde::Serialize)]
+#[non_exhaustive]
+pub enum EncodingName {
+    #[serde(rename = "proto")]
+    Protobuf,
 }
 
-impl Default for NegotiationQuery {
-    fn default() -> Self {
-        Self {
-            enc: "proto".into(),
+impl From<encoding::Name> for EncodingName {
+    fn from(name: encoding::Name) -> Self {
+        match name {
+            encoding::Name::Protobuf => EncodingName::Protobuf,
         }
     }
 }
 
-impl NegotiationQuery {
-    pub fn query_string(&self) -> Result<String, Error> {
-        serde_qs::to_string(self).map_err(Error::invalid_value)
+#[derive(Clone, Debug, serde::Serialize)]
+pub enum CompressionType {
+    #[serde(rename = "per-message")]
+    PerMessage,
+    #[serde(rename = "context-takeover")]
+    ContextTakeover,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+#[non_exhaustive]
+pub struct NegotiationParams {
+    #[serde(rename = "enc")]
+    pub encoding_name: EncodingName,
+    #[serde(rename = "comp")]
+    pub compression_type: Option<CompressionType>,
+    #[serde(rename = "clevel")]
+    pub compression_level: Option<i8>,
+    #[serde(rename = "cwinbits")]
+    pub compression_window_bits: Option<u8>,
+}
+
+impl NegotiationParams {
+    pub(crate) fn to_uri_query_string(&self) -> Result<String, TransportError> {
+        serde_qs::to_string(&self).map_err(TransportError::new)
     }
 
-    pub fn bytes(&self) -> Result<Vec<u8>, Error> {
+    pub(crate) fn to_bytes(&self) -> Result<Vec<u8>, TransportError> {
+        use serde_json::Value;
+
         let mut buf = Vec::new();
 
-        let enc = self.enc.as_bytes();
-        buf.put_u16(3);
-        buf.put(b"enc".as_slice());
-        buf.put_u16(
-            enc.len()
-                .try_into()
-                .map_err(|_| Error::invalid_value("too long \"enc\" for negotiation"))?,
-        );
-        buf.put(enc);
+        let value = serde_json::to_value(self).unwrap();
+        let map = value.as_object().unwrap();
+        for (k, v) in map.iter() {
+            let v = match v {
+                Value::Null => continue,
+                Value::String(s) => s.clone(),
+                _ => v.to_string(),
+            };
+
+            buf.put_u16(
+                k.len()
+                    .try_into()
+                    .map_err(|_| TransportError::from_msg("too long key for negotiation"))?,
+            );
+            buf.put(k.as_bytes());
+
+            buf.put_u16(
+                v.len()
+                    .try_into()
+                    .map_err(|_| TransportError::from_msg("too long value for negotiation"))?,
+            );
+            buf.put(v.as_bytes());
+        }
 
         Ok(buf)
     }

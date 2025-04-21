@@ -1,97 +1,57 @@
-//! iSCPのメッセージ構造体を格納したモジュールです。
+//! iSCP message types.
 
-#![allow(clippy::derive_partial_eq_without_eq)]
+#[rustfmt::skip]
+#[allow(clippy::all)]
+mod proto {
+    include!("proto/iscp2.v1.rs");
 
-mod connect;
-mod data;
-mod downstream;
-mod e2e;
-mod filter;
-mod metadata;
-mod ping_pong;
-mod qos;
-mod result;
-mod upstream;
-pub use connect::*;
-pub use data::*;
-pub use downstream::*;
-pub use e2e::*;
-pub use filter::*;
-pub use metadata::*;
-pub use ping_pong::*;
-pub use qos::*;
-pub use result::*;
-pub use upstream::*;
-
-use std::collections::HashMap;
-
-use crate::error::{Error, Result};
-
-#[derive(Clone, Copy, Eq, PartialEq, Hash, Default, Debug)]
-pub struct RequestId(u32);
-impl RequestId {
-    pub fn new(v: u32) -> Self {
-        Self(v)
-    }
-    pub fn new_as_edge() -> Self {
-        Self(0)
-    }
-    pub fn value(&self) -> u32 {
-        self.0
-    }
-    pub fn set(&mut self, v: u32) {
-        self.0 = v
-    }
-    pub fn increment(&mut self) -> &mut Self {
-        self.0 += 2;
-        self
-    }
-}
-impl From<u32> for RequestId {
-    fn from(v: u32) -> Self {
-        Self::new(v)
-    }
+    #[path = "iscp2.v1.extensions.rs"]
+    pub mod extensions;
 }
 
-pub use crate::encoding::internal::autogen::DataId;
+pub use proto::*;
 
 impl DataId {
-    pub fn new<T1: Into<String>, T2: Into<String>>(name: T1, type_: T2) -> Self {
+    pub fn new<SN: ToString, ST: ToString>(name: SN, type_: ST) -> Self {
         Self {
-            name: name.into(),
-            type_: type_.into(),
+            name: name.to_string(),
+            type_: type_.to_string(),
         }
     }
 
-    pub fn validate(&self) -> Result<()> {
-        let list = ["#", "+", ":"];
-        for c in list.iter() {
+    pub fn validate(&self) -> Result<(), DataIdParseError> {
+        let list = ['#', '+', ':'];
+        for &c in list.iter() {
             if self.name.contains(c) || self.type_.contains(c) {
-                return Err(Error::invalid_value(format!("cannot use {:?}", list)));
+                return Err(DataIdParseError::InvalidChar(c));
             }
         }
 
         Ok(())
     }
-
-    pub fn parse_str(data_id: &str) -> Result<Self> {
-        let split = data_id.split(':').collect::<Vec<_>>();
-        if split.len() != 2 {
-            return Err(Error::invalid_value("splitter ':' not found"));
-        }
-        let id = Self {
-            type_: split[0].to_string(),
-            name: split[1].to_string(),
-        };
-        id.validate()?;
-        Ok(id)
-    }
 }
 
 impl std::str::FromStr for DataId {
-    type Err = crate::error::Error;
+    type Err = DataIdParseError;
+
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::parse_str(s)
+        let mut split = s.split(':');
+        let Some(type_) = split.next() else {
+            return Err(DataIdParseError::SplitterNotFound);
+        };
+        let Some(name) = split.next() else {
+            return Err(DataIdParseError::SplitterNotFound);
+        };
+        if split.next().is_some() {
+            return Err(DataIdParseError::MultipleSplitterFound);
+        }
+
+        let id = Self {
+            type_: type_.to_owned(),
+            name: name.to_owned(),
+        };
+        id.validate()?;
+        Ok(id)
     }
 }
 
@@ -101,69 +61,36 @@ impl std::fmt::Display for DataId {
     }
 }
 
-pub type DataIdAliasMap = HashMap<u32, DataId>;
-
-#[derive(Clone, PartialEq, Debug)]
-pub enum Message {
-    // connect
-    ConnectRequest(ConnectRequest),
-    ConnectResponse(ConnectResponse),
-    Disconnect(Disconnect),
-
-    // upstream control
-    UpstreamOpenRequest(UpstreamOpenRequest),
-    UpstreamOpenResponse(UpstreamOpenResponse),
-    UpstreamResumeRequest(UpstreamResumeRequest),
-    UpstreamResumeResponse(UpstreamResumeResponse),
-    UpstreamCloseRequest(UpstreamCloseRequest),
-    UpstreamCloseResponse(UpstreamCloseResponse),
-
-    // downstream control
-    DownstreamOpenRequest(DownstreamOpenRequest),
-    DownstreamOpenResponse(DownstreamOpenResponse),
-    DownstreamResumeRequest(DownstreamResumeRequest),
-    DownstreamResumeResponse(DownstreamResumeResponse),
-    DownstreamCloseRequest(DownstreamCloseRequest),
-    DownstreamCloseResponse(DownstreamCloseResponse),
-
-    // e2e
-    UpstreamCall(UpstreamCall),
-    UpstreamCallAck(UpstreamCallAck),
-    DownstreamCall(DownstreamCall),
-
-    // ping pong
-    Ping(Ping),
-    Pong(Pong),
-
-    // stream messages
-    UpstreamChunk(UpstreamChunk),
-    UpstreamChunkAck(UpstreamChunkAck),
-    DownstreamChunk(DownstreamChunk),
-    DownstreamChunkAck(DownstreamChunkAck),
-    DownstreamChunkAckComplete(DownstreamChunkAckComplete),
-
-    // metadata
-    UpstreamMetadata(UpstreamMetadata),
-    UpstreamMetadataAck(UpstreamMetadataAck),
-    DownstreamMetadata(DownstreamMetadata),
-    DownstreamMetadataAck(DownstreamMetadataAck),
+#[derive(Clone, PartialEq, Eq, Debug, thiserror::Error)]
+pub enum DataIdParseError {
+    #[error("splitter ':' not found")]
+    SplitterNotFound,
+    #[error("multiple splitter found")]
+    MultipleSplitterFound,
+    #[error("include invalid character")]
+    InvalidChar(char),
 }
 
-// from
+#[derive(Debug, thiserror::Error)]
+#[error("message convert error")]
+pub struct MessageConvertError(pub Message);
+
 macro_rules! impl_from {
     ($($member:ident,)*) => {
         $(
             impl From<$member> for Message {
                 fn from(m: $member) -> Self {
-                    Self::$member(m)
+                    Message {
+                        message: Some(proto::message::Message::$member(m)),
+                    }
                 }
             }
             impl TryFrom<Message> for $member {
-                type Error = crate::error::Error;
+                type Error = MessageConvertError;
                 fn try_from(m: Message) -> core::result::Result<Self, Self::Error> {
-                    match m {
-                        Message::$member(p) => Ok(p),
-                        _ => Err(Error::unexpected("unmatched message")),
+                    match m.message {
+                        Some(proto::message::Message::$member(a)) => Ok(a),
+                        _ => Err(MessageConvertError(m)),
                     }
                 }
             }
@@ -175,174 +102,184 @@ impl_from!(
     ConnectRequest,
     ConnectResponse,
     Disconnect,
-    UpstreamOpenRequest,
-    UpstreamOpenResponse,
-    UpstreamResumeRequest,
-    UpstreamResumeResponse,
-    UpstreamCloseRequest,
-    UpstreamCloseResponse,
+    DownstreamCall,
+    DownstreamChunk,
+    DownstreamChunkAck,
+    DownstreamChunkAckComplete,
+    DownstreamCloseRequest,
+    DownstreamCloseResponse,
+    DownstreamMetadata,
+    DownstreamMetadataAck,
     DownstreamOpenRequest,
     DownstreamOpenResponse,
     DownstreamResumeRequest,
     DownstreamResumeResponse,
-    DownstreamCloseRequest,
-    DownstreamCloseResponse,
-    UpstreamCall,
-    UpstreamCallAck,
-    DownstreamCall,
     Ping,
     Pong,
+    UpstreamCall,
+    UpstreamCallAck,
     UpstreamChunk,
     UpstreamChunkAck,
-    DownstreamChunk,
-    DownstreamChunkAck,
-    DownstreamChunkAckComplete,
+    UpstreamCloseRequest,
+    UpstreamCloseResponse,
     UpstreamMetadata,
     UpstreamMetadataAck,
-    DownstreamMetadata,
-    DownstreamMetadataAck,
+    UpstreamOpenRequest,
+    UpstreamOpenResponse,
+    UpstreamResumeRequest,
+    UpstreamResumeResponse,
 );
 
-// error
-macro_rules! impl_error {
+mod private {
+    pub trait Sealed {}
+}
+
+pub trait HasRequestId: private::Sealed {
+    fn request_id(&self) -> u32;
+    fn set_request_id(&mut self, request_id: u32);
+}
+
+macro_rules! impl_has_request_id {
     ($($member:ident,)*) => {
         $(
-            impl From<$member> for Error {
-                fn from(m: $member) -> Error {
-                    Error::FailedMessage {
-                        code: m.result_code,
-                        detail: m.result_string,
-                    }
+            impl private::Sealed for $member {}
+            impl HasRequestId for $member {
+                fn request_id(&self) -> u32 {
+                    self.request_id
+                }
+
+                fn set_request_id(&mut self, request_id: u32) {
+                    self.request_id = request_id;
                 }
             }
         )*
     }
 }
-impl_error!(
+
+impl_has_request_id!(
+    ConnectRequest,
     ConnectResponse,
-    Disconnect,
-    UpstreamOpenResponse,
-    UpstreamResumeResponse,
-    UpstreamCloseResponse,
-    UpstreamChunkResult,
-    UpstreamMetadataAck,
-    DownstreamOpenResponse,
-    DownstreamResumeResponse,
+    DownstreamCloseRequest,
     DownstreamCloseResponse,
-    DownstreamChunkResult,
+    DownstreamMetadata,
     DownstreamMetadataAck,
+    DownstreamOpenRequest,
+    DownstreamOpenResponse,
+    DownstreamResumeRequest,
+    DownstreamResumeResponse,
+    Ping,
+    Pong,
+    UpstreamCloseRequest,
+    UpstreamCloseResponse,
+    UpstreamMetadata,
+    UpstreamMetadataAck,
+    UpstreamOpenRequest,
+    UpstreamOpenResponse,
+    UpstreamResumeRequest,
+    UpstreamResumeResponse,
 );
 
+pub trait HasResultCode: private::Sealed {
+    fn result_code(&self) -> Option<ResultCode>;
+    fn result_string(&self) -> &str;
+}
+
+macro_rules! impl_has_result_code {
+    ($($member:ident,)*) => {
+        $(
+            impl HasResultCode for $member {
+                fn result_code(&self) -> Option<ResultCode> {
+                    self.result_code.try_into().ok()
+                }
+
+                fn result_string(&self) -> &str {
+                    &self.result_string
+                }
+            }
+        )*
+    }
+}
+
+impl_has_result_code!(
+    ConnectResponse,
+    DownstreamCloseResponse,
+    DownstreamMetadataAck,
+    DownstreamOpenResponse,
+    DownstreamResumeResponse,
+    UpstreamCloseResponse,
+    UpstreamMetadataAck,
+    UpstreamOpenResponse,
+    UpstreamResumeResponse,
+);
+
+pub trait RequestMessage: Into<Message> + HasRequestId {
+    type Response: TryFrom<Message> + HasRequestId + HasResultCode;
+}
+
+impl RequestMessage for ConnectRequest {
+    type Response = ConnectResponse;
+}
+impl RequestMessage for DownstreamCloseRequest {
+    type Response = DownstreamCloseResponse;
+}
+impl RequestMessage for DownstreamMetadata {
+    type Response = DownstreamMetadataAck;
+}
+impl RequestMessage for DownstreamOpenRequest {
+    type Response = DownstreamOpenResponse;
+}
+impl RequestMessage for DownstreamResumeRequest {
+    type Response = DownstreamResumeResponse;
+}
+impl RequestMessage for UpstreamCloseRequest {
+    type Response = UpstreamCloseResponse;
+}
+impl RequestMessage for UpstreamMetadata {
+    type Response = UpstreamMetadataAck;
+}
+impl RequestMessage for UpstreamOpenRequest {
+    type Response = UpstreamOpenResponse;
+}
+impl RequestMessage for UpstreamResumeRequest {
+    type Response = UpstreamResumeResponse;
+}
+
 impl Message {
-    pub fn request_id(&self) -> Option<RequestId> {
-        match &self {
-            // connect
-            Self::ConnectRequest(m) => Some(m.request_id),
-            Self::ConnectResponse(m) => Some(m.request_id),
-
-            // upstream
-            Self::UpstreamOpenRequest(m) => Some(m.request_id),
-            Self::UpstreamOpenResponse(m) => Some(m.request_id),
-            Self::UpstreamResumeRequest(m) => Some(m.request_id),
-            Self::UpstreamResumeResponse(m) => Some(m.request_id),
-            Self::UpstreamCloseRequest(m) => Some(m.request_id),
-            Self::UpstreamCloseResponse(m) => Some(m.request_id),
-
-            // downstream
-            Self::DownstreamOpenRequest(m) => Some(m.request_id),
-            Self::DownstreamOpenResponse(m) => Some(m.request_id),
-            Self::DownstreamResumeRequest(m) => Some(m.request_id),
-            Self::DownstreamResumeResponse(m) => Some(m.request_id),
-            Self::DownstreamCloseRequest(m) => Some(m.request_id),
-            Self::DownstreamCloseResponse(m) => Some(m.request_id),
-
-            // ping pong
-            Self::Ping(m) => Some(m.request_id),
-            Self::Pong(m) => Some(m.request_id),
-
-            // metadata
-            Self::UpstreamMetadata(m) => Some(m.request_id),
-            Self::UpstreamMetadataAck(m) => Some(m.request_id),
-            Self::DownstreamMetadata(m) => Some(m.request_id),
-            Self::DownstreamMetadataAck(m) => Some(m.request_id),
-            _ => None,
-        }
-    }
-
-    pub fn upstream_id_alias(&self) -> Option<u32> {
-        match &self {
-            Self::UpstreamChunk(m) => Some(m.stream_id_alias),
-            Self::UpstreamChunkAck(m) => Some(m.stream_id_alias),
-            _ => None,
-        }
-    }
-
-    pub fn downstream_id_alias(&self) -> Option<u32> {
-        match &self {
-            Self::DownstreamChunk(m) => Some(m.stream_id_alias),
-            Self::DownstreamChunkAck(m) => Some(m.stream_id_alias),
-            Self::DownstreamChunkAckComplete(m) => Some(m.stream_id_alias),
-            _ => None,
-        }
+    pub fn request_id(&self) -> Option<u32> {
+        use proto::message::Message::*;
+        let request_id = match self.message.as_ref()? {
+            ConnectRequest(a) => a.request_id,
+            ConnectResponse(a) => a.request_id,
+            DownstreamCloseRequest(a) => a.request_id,
+            DownstreamCloseResponse(a) => a.request_id,
+            DownstreamMetadata(a) => a.request_id,
+            DownstreamMetadataAck(a) => a.request_id,
+            DownstreamOpenRequest(a) => a.request_id,
+            DownstreamOpenResponse(a) => a.request_id,
+            DownstreamResumeRequest(a) => a.request_id,
+            DownstreamResumeResponse(a) => a.request_id,
+            Ping(a) => a.request_id,
+            Pong(a) => a.request_id,
+            UpstreamCloseRequest(a) => a.request_id,
+            UpstreamCloseResponse(a) => a.request_id,
+            UpstreamMetadata(a) => a.request_id,
+            UpstreamMetadataAck(a) => a.request_id,
+            UpstreamOpenRequest(a) => a.request_id,
+            UpstreamOpenResponse(a) => a.request_id,
+            UpstreamResumeRequest(a) => a.request_id,
+            UpstreamResumeResponse(a) => a.request_id,
+            _ => {
+                return None;
+            }
+        };
+        Some(request_id)
     }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
-
-    #[test]
-    fn request_id_and_stream_id_alias() {
-        let requests: Vec<Message> = vec![
-            Message::from(ConnectRequest::default()),
-            Message::from(ConnectResponse::default()),
-            // Message::from(Disconnect::default()),
-            Message::from(UpstreamOpenRequest::default()),
-            Message::from(UpstreamOpenResponse::default()),
-            Message::from(UpstreamResumeRequest::default()),
-            Message::from(UpstreamResumeResponse::default()),
-            Message::from(UpstreamCloseRequest::default()),
-            Message::from(UpstreamCloseResponse::default()),
-            Message::from(DownstreamOpenRequest::default()),
-            Message::from(DownstreamOpenResponse::default()),
-            Message::from(DownstreamResumeRequest::default()),
-            Message::from(DownstreamResumeResponse::default()),
-            Message::from(DownstreamCloseRequest::default()),
-            Message::from(DownstreamCloseResponse::default()),
-            Message::from(Ping::default()),
-            Message::from(Pong::default()),
-            Message::from(UpstreamMetadata::default()),
-            Message::from(UpstreamMetadataAck::default()),
-            Message::from(DownstreamMetadata::default()),
-            Message::from(DownstreamMetadataAck::default()),
-        ];
-
-        requests.into_iter().for_each(|m| {
-            m.request_id().expect("exist request id");
-            assert!(m.upstream_id_alias().is_none());
-            assert!(m.downstream_id_alias().is_none());
-        });
-
-        // stream message
-        let upstreams: Vec<Message> = vec![
-            UpstreamChunk::default().into(),
-            UpstreamChunkAck::default().into(),
-        ];
-        let downstreams: Vec<Message> = vec![
-            DownstreamChunk::default().into(),
-            DownstreamChunkAck::default().into(),
-        ];
-        upstreams.into_iter().for_each(|m| {
-            assert!(m.upstream_id_alias().is_some());
-            assert!(m.downstream_id_alias().is_none());
-            assert!(m.request_id().is_none());
-        });
-        downstreams.into_iter().for_each(|m| {
-            assert!(m.upstream_id_alias().is_none());
-            assert!(m.downstream_id_alias().is_some());
-            assert!(m.request_id().is_none());
-        });
-    }
+    use std::str::FromStr;
 
     #[test]
     fn data_id_validate() {
@@ -358,17 +295,18 @@ mod test {
     #[test]
     fn data_id_parse_str() {
         assert_eq!(
-            DataId::parse_str("type:name").unwrap(),
+            DataId::from_str("type:name").unwrap(),
             DataId::new("name", "type"),
         );
-        assert!(DataId::parse_str("type-name").is_err());
-        assert!(DataId::parse_str("ty:pe:name").is_err());
-        assert!(DataId::parse_str("ty#pe:name").is_err());
-        assert!(DataId::parse_str("type:na+me").is_err());
+        assert!(DataId::from_str("type-name").is_err());
+        assert!(DataId::from_str("ty:pe:name").is_err());
+        assert!(DataId::from_str("ty#pe:name").is_err());
+        assert!(DataId::from_str("type:na+me").is_err());
     }
+
     #[test]
     fn data_id_format() {
-        let id = DataId::parse_str("type:name").unwrap();
+        let id = DataId::from_str("type:name").unwrap();
         assert_eq!(format!("{}", id), "type:name");
     }
 }
