@@ -1,4 +1,4 @@
-//! iSCP metadata types.
+//! iSCPメタデータ型の定義
 
 use std::time::SystemTime;
 
@@ -197,6 +197,7 @@ pub struct MetadataSender<'a> {
 }
 
 impl Conn {
+    /// メタデータを送信
     pub fn metadata_sender<T: Into<SendableMetadata>>(&self, metadata: T) -> MetadataSender<'_> {
         MetadataSender {
             conn: self,

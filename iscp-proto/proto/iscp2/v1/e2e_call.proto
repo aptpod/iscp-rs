@@ -1,0 +1,36 @@
+syntax = "proto3";
+package iscp2.v1;
+
+import "iscp2/v1/extensions/e2e_call.proto";
+import "iscp2/v1/result_code.proto";
+
+//
+// iSCP Messages
+//
+
+message UpstreamCall {
+  string call_id = 1;
+  string request_call_id = 2;
+  string destination_node_id = 3;
+  string name = 4;
+  string type = 5;
+  bytes payload = 6;
+  iscp2.v1.extensions.UpstreamCallExtensionFields extension_fields = 7;
+}
+
+message UpstreamCallAck {
+  string call_id = 1;
+  ResultCode result_code = 2;
+  string result_string = 3;
+  iscp2.v1.extensions.UpstreamCallAckExtensionFields extension_fields = 4;
+}
+
+message DownstreamCall {
+  string call_id = 1;
+  string request_call_id = 2;
+  string source_node_id = 3;
+  string name = 4;
+  string type = 5;
+  bytes payload = 6;
+  iscp2.v1.extensions.DownstreamCallExtensionFields extension_fields = 7;
+}

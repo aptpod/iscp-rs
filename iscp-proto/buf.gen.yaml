@@ -1,0 +1,25 @@
+version: v1
+managed:
+  enabled: true
+  java_package_prefix: com.github.aptpod.proto
+  go_package_prefix: 
+    default: github.com/aptpod/iscp-proto/gen/go
+  java_multiple_files: true
+plugins:
+  - plugin: buf.build/protocolbuffers/go:v1.28.1
+    out: gen/go
+    opt: paths=source_relative
+  - plugin: buf.build/protocolbuffers/python:v23.4
+    out: gen/python
+  - plugin: buf.build/apple/swift:v1.22.1
+    out: gen/swift
+  - plugin: buf.build/bufbuild/es:v1.3.0
+    opt: target=ts
+    out: gen/ts
+  - plugin: buf.build/protocolbuffers/csharp
+    out: gen/csharp
+    opt: file_extension=.g.cs,base_namespace=Iscp2.V1,internal_access
+  - plugin: buf.build/protocolbuffers/java
+    out: gen/java
+  - plugin: buf.build/protocolbuffers/kotlin
+    out: gen/kotlin

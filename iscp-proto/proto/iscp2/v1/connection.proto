@@ -1,0 +1,31 @@
+syntax = "proto3";
+package iscp2.v1;
+
+import "iscp2/v1/extensions/connection.proto";
+import "iscp2/v1/result_code.proto";
+//
+// iSCP Messages
+//
+
+message ConnectRequest {
+  uint32 request_id = 1;
+  string protocol_version = 2;
+  string node_id = 3;
+  uint32 ping_interval = 4;
+  uint32 ping_timeout = 5;
+  iscp2.v1.extensions.ConnectRequestExtensionFields extension_fields = 6;
+}
+
+message ConnectResponse {
+  uint32 request_id = 1;
+  string protocol_version = 2;
+  ResultCode result_code = 3;
+  string result_string = 4;
+  iscp2.v1.extensions.ConnectResponseExtensionFields extension_fields = 5;
+}
+
+message Disconnect {
+  ResultCode result_code = 1;
+  string result_string = 2;
+  iscp2.v1.extensions.DisconnectExtensionFields extension_fields = 3;
+}

@@ -1,0 +1,41 @@
+syntax = "proto3";
+package iscp2.v1;
+
+enum QoS {
+  UNRELIABLE = 0;
+  RELIABLE = 1;
+  PARTIAL = 2;
+}
+
+message StreamChunk {
+  uint32 sequence_number = 1;
+  repeated DataPointGroup data_point_groups = 2;
+}
+
+message DataPointGroup {
+  oneof data_id_or_alias {
+    DataID data_id = 1;
+    uint32 data_id_alias = 2;
+  }
+  repeated DataPoint data_points = 3;
+}
+
+message DataPoint {
+  sint64 elapsed_time = 1;
+  bytes payload = 2;
+}
+
+message DataID {
+  string name = 1;
+  string type = 2;
+}
+
+message DownstreamFilter {
+  string source_node_id = 1;
+  repeated DataFilter data_filters = 2;
+}
+
+message DataFilter {
+  string name = 1;
+  string type = 2;
+}

@@ -41,7 +41,7 @@ pub use upstream::{
     UpstreamResumedCallback, UpstreamState,
 };
 
-/// Builder type for [Conn].
+/// [Conn] のビルダー型
 #[derive(Clone)]
 pub struct ConnBuilder<C> {
     connector: C,
@@ -57,6 +57,7 @@ pub struct ConnBuilder<C> {
 }
 
 impl<C: Connector> ConnBuilder<C> {
+    /// ビルダーを作成
     pub fn new(connector: C) -> Self {
         Self {
             connector,
@@ -72,6 +73,7 @@ impl<C: Connector> ConnBuilder<C> {
         }
     }
 
+    /// 接続開始
     pub async fn build(mut self) -> Result<Conn, Error> {
         if rustls::crypto::CryptoProvider::get_default().is_none() {
             let _ = rustls::crypto::ring::default_provider().install_default();
@@ -89,42 +91,49 @@ impl<C: Connector> ConnBuilder<C> {
         })
     }
 
+    /// エンコード方法を設定
     pub fn encoding(mut self, encoding: Encoding) -> Self {
         self.encoding = encoding;
         self
     }
 
+    /// 圧縮方法を設定
     pub fn compression(mut self, compression: Compression) -> Self {
         self.compression = compression;
         self
     }
 
+    /// ノードIDを設定
     pub fn node_id<S: ToString>(mut self, node_id: S) -> Self {
         self.node_id = node_id.to_string();
         self
     }
 
+    /// プロジェクトUUIDを設定
     pub fn project_uuid<T: Into<Option<Uuid>>>(mut self, project_uuid: T) -> Self {
         self.project_uuid = project_uuid.into();
         self
     }
 
+    /// Ping間隔を設定
     pub fn ping_interval(mut self, ping_interval: Duration) -> Self {
         self.ping_interval = ping_interval;
         self
     }
 
+    /// Pingタイムアウトを設定
     pub fn ping_timeout(mut self, ping_timeout: Duration) -> Self {
         self.ping_timeout = ping_timeout;
         self
     }
 
-    /// Timeout for waiting message response.
+    /// 返信タイムアウトを設定
     pub fn response_message_timeout(mut self, response_message_timeout: Duration) -> Self {
         self.response_message_timeout = response_message_timeout;
         self
     }
 
+    /// トークンソースを設定
     pub fn token_source<T: Into<Option<TS>>, TS: TokenSource>(mut self, token_source: T) -> Self {
         self.token_source = token_source
             .into()
@@ -229,7 +238,7 @@ pub(crate) enum ConnectionState {
     Closed,
 }
 
-/// iSCP connection.
+/// iSCP接続
 #[derive(Clone)]
 pub struct Conn {
     inner: Arc<ConnInner>,

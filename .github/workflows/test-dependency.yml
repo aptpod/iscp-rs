@@ -21,10 +21,11 @@ jobs:
           cd dependency-test
           echo -e 'async-trait = "0.1"' >>Cargo.toml
           echo -e 'chrono = "0.4"' >>Cargo.toml
-          echo -e 'tokio = { version = "1.21", features = ["rt"] }' >>Cargo.toml
-          echo -e 'uuid = "1.2"' >>Cargo.toml
+          echo -e 'env_logger = "0.11.0"' >>Cargo.toml
+          echo -e 'tokio = { version = "1.37", features = ["rt"] }' >>Cargo.toml
+          echo -e 'uuid = "1.8"' >>Cargo.toml
           echo -e 'iscp-rs = { path = "'${GITHUB_WORKSPACE}'" }' >>Cargo.toml
-          cp ${GITHUB_WORKSPACE}/examples/upstream.rs src/main.rs
+          cp ${GITHUB_WORKSPACE}/examples/updown.rs src/main.rs
           rustc --version
           cargo --version
           cargo check --verbose

@@ -2,6 +2,7 @@ use super::{types::*, Conn};
 use crate::{ConnectionState, Error};
 
 impl Conn {
+    /// E2Eコールを送信し、コールIDを返却
     pub async fn send_call(&self, call: UpstreamCall) -> Result<String, Error> {
         loop {
             self.wait_for_state(ConnectionState::Connected).await?;
@@ -17,6 +18,7 @@ impl Conn {
         }
     }
 
+    /// リプライコールを送信し、コールIDを返却
     pub async fn send_reply_call(&self, call: UpstreamReplyCall) -> Result<String, Error> {
         loop {
             self.wait_for_state(ConnectionState::Connected).await?;
@@ -32,6 +34,9 @@ impl Conn {
         }
     }
 
+    /// E2Eコールを送信し、それに対応するリプライコールを受信
+    ///
+    /// このメソッドはリプライコールを受信できるまで処理をブロックします。
     pub async fn send_call_and_wait_reply_call(
         &self,
         call: UpstreamCall,
@@ -50,6 +55,7 @@ impl Conn {
         }
     }
 
+    /// リプライコールでないコールを受信
     pub async fn recv_call(&self) -> Result<DownstreamCall, Error> {
         loop {
             self.wait_for_state(ConnectionState::Connected).await?;
@@ -65,6 +71,7 @@ impl Conn {
         }
     }
 
+    /// リプライコールを受信
     pub async fn recv_reply_call(&self) -> Result<DownstreamReplyCall, Error> {
         loop {
             self.wait_for_state(ConnectionState::Connected).await?;

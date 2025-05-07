@@ -1,6 +1,6 @@
 use tokio::sync::{mpsc, oneshot};
 
-/// An access token for iSCP connection.
+/// iSCP接続のアクセストークン
 #[derive(Clone, PartialEq, Eq, Default)]
 pub struct AccessToken(pub(crate) String);
 impl std::fmt::Debug for AccessToken {
@@ -29,7 +29,7 @@ impl From<AccessToken> for String {
     }
 }
 
-/// Source of iSCP access token.
+/// iSCPアクセストークンのソース
 pub trait TokenSource: Send + Sync + 'static {
     fn token(
         &mut self,
@@ -74,12 +74,12 @@ impl SharedTokenSource {
     }
 }
 
-/// Static token source.
+/// 静的トークンソース
 #[derive(Clone, Debug, Default)]
 pub struct StaticTokenSource(AccessToken);
 
 impl StaticTokenSource {
-    /// Create StaticTokenSource from a string.
+    /// 文字列から静的トークンソース作成
     pub fn new<T: std::fmt::Display>(token: T) -> Self {
         Self(AccessToken::new(token))
     }
@@ -91,7 +91,7 @@ impl TokenSource for StaticTokenSource {
     }
 }
 
-/// Represent an error occured at token source.
+/// トークンソースのエラー
 pub struct TokenSourceError {
     inner: Box<dyn std::error::Error + Send + Sync>,
 }

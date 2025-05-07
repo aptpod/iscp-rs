@@ -1,4 +1,4 @@
-//! iSCP message types.
+//! iSCPメッセージ型の定義
 
 #[rustfmt::skip]
 #[allow(clippy::all)]

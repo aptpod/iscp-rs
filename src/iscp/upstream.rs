@@ -24,42 +24,42 @@ use crate::{
     wire::Conn as WireConn,
 };
 
-/// Callback of upstream chunk flush.
+/// アップストリームチャンクのフラッシュのコールバック
 pub type SendDataPointsCallback =
     Arc<dyn Fn(Uuid, UpstreamChunk) -> CallbackReturnValue + Send + Sync + 'static>;
-/// Callback of upstream ack receive.
+/// Ackの受信のコールバック
 pub type ReceiveAckCallback =
     Arc<dyn Fn(Uuid, UpstreamChunkResult) -> CallbackReturnValue + Send + Sync + 'static>;
-/// Callback of upstream resumed.
+/// アップストリームの再開のコールバック
 pub type UpstreamResumedCallback = Arc<
     dyn Fn(Uuid, Arc<UpstreamConfig>, UpstreamState) -> CallbackReturnValue + Send + Sync + 'static,
 >;
 
-/// Upstream configuration.
+/// アップストリーム設定
 #[derive(Clone)]
 #[non_exhaustive]
 pub struct UpstreamConfig {
-    /// Session id.
+    /// セッションID
     pub session_id: String,
-    /// Ack interval.
+    /// Ack間隔
     pub ack_interval: Duration,
-    /// Resume expiry interval.
+    /// ストリーム再開の有効期限
     pub expiry_interval: Duration,
-    /// Data ids for setting data id alias.
+    /// データIDエイリアスの設定に用いるデータIDのリスト
     pub data_ids: Vec<DataId>,
-    /// Stream QoS.
+    /// ストリームのQoS
     pub qos: QoS,
-    /// Persist.
+    /// 永続化の設定
     pub persist: bool,
-    /// Flush policy of this stream.
+    /// フラッシュポリシー
     pub flush_policy: FlushPolicy,
-    /// Close timeout.
+    /// クローズのタイムアウト
     pub close_timeout: Duration,
-    /// Callback for sending data points.
+    /// アップストリームチャンクのフラッシュのコールバック
     pub send_data_points_callback: Option<SendDataPointsCallback>,
-    /// Callback for receiving ack.
+    /// Ackの受信のコールバック
     pub receive_ack_callback: Option<ReceiveAckCallback>,
-    /// Callback for resume.
+    /// アップストリームの再開のコールバック
     pub resumed_callback: Option<UpstreamResumedCallback>,
 }
 
@@ -81,7 +81,7 @@ impl Default for UpstreamConfig {
     }
 }
 
-/// An iSCP upstream.
+/// iSCPのアップストリーム
 pub struct Upstream {
     inner: Arc<UpstreamInner>,
 }
@@ -98,19 +98,25 @@ pub struct UpstreamInner {
     ct: CancellationToken,
 }
 
-/// Upstream state.
+/// アップストリームの状態
 #[derive(Clone, Debug)]
 pub struct UpstreamState {
+    /// データIDエイリアスのマップ
     pub data_id_aliases: HashMap<u32, DataId>,
+    /// 合計送信データポイント数
     pub total_data_points: u64,
+    /// 最後に発行されたシーケンス番号
     pub last_issued_sequence_number: Option<NonZeroU32>,
+    /// データポイントバッファ
     pub data_points_buffer: Vec<DataPointGroup>,
+    /// バッファのペイロードサイズ
     pub buffer_payload_size: usize,
 }
 
-/// Options for closing an upstream.
+/// アップストリームのクローズオプション
 #[derive(Clone, Default, Debug)]
 pub struct UpstreamCloseOptions {
+    /// セッションも同時に閉じるかどうか
     pub close_session: bool,
 }
 
@@ -168,7 +174,7 @@ impl Upstream {
         Ok((Self { inner }, ct))
     }
 
-    /// Write data points.
+    /// データポイントを書き込む
     pub async fn write_data_points<T: IntoIterator<Item = DataPoint>>(
         &mut self,
         data_id: DataId,
@@ -202,7 +208,7 @@ impl Upstream {
         Ok(())
     }
 
-    /// Flush buffered data points to the upstream.
+    /// データポイントをフラッシュする
     pub async fn flush(&mut self) -> Result<(), Error> {
         if self.inner.ct.is_cancelled() {
             return Err(Error::StreamClosed);
@@ -215,7 +221,7 @@ impl Upstream {
         })?
     }
 
-    /// Close this upstream.
+    /// このアップストリームを閉じる
     pub async fn close<T: Into<Option<UpstreamCloseOptions>>>(
         &mut self,
         opts: T,
@@ -233,22 +239,22 @@ impl Upstream {
             .map_err(|_| Error::unexpected("cannot get close result"))?
     }
 
-    /// Get the configuration of this upstream.
+    /// アップストリームの設定を取得
     pub fn config(&self) -> Arc<UpstreamConfig> {
         self.inner.config.clone()
     }
 
-    /// Get the stream id.
+    /// アップストリームのIDを取得
     pub fn stream_id(&self) -> Uuid {
         self.inner.stream_id
     }
 
-    /// Get the current upstream state.
+    /// アップストリームの状態を取得
     pub fn state(&self) -> UpstreamState {
         self.inner.upstream_state()
     }
 
-    /// This upstream is connected or not.
+    /// アップストリームが接続されているか取得
     pub fn is_connected(&self) -> bool {
         self.inner.is_connected.load()
     }

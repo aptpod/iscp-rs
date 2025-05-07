@@ -1,0 +1,51 @@
+syntax = "proto3";
+package iscp2.v1;
+
+import "iscp2/v1/connection.proto";
+import "iscp2/v1/downstream.proto";
+import "iscp2/v1/e2e_call.proto";
+import "iscp2/v1/ping_pong.proto";
+import "iscp2/v1/upstream.proto";
+
+message Message {
+  oneof message {
+    // Connect
+    ConnectRequest connect_request = 1;
+    ConnectResponse connect_response = 2;
+    Disconnect disconnect = 3;
+
+    // Upstream
+    UpstreamOpenRequest upstream_open_request = 64;
+    UpstreamOpenResponse upstream_open_response = 65;
+    UpstreamResumeRequest upstream_resume_request = 66;
+    UpstreamResumeResponse upstream_resume_response = 67;
+    UpstreamCloseRequest upstream_close_request = 68;
+    UpstreamCloseResponse upstream_close_response = 69;
+    UpstreamChunk upstream_chunk = 70;
+    UpstreamChunkAck upstream_chunk_ack = 71;
+    UpstreamMetadata upstream_metadata = 72;
+    UpstreamMetadataAck upstream_metadata_ack = 73;
+
+    // Downstream
+    DownstreamOpenRequest downstream_open_request = 128;
+    DownstreamOpenResponse downstream_open_response = 129;
+    DownstreamResumeRequest downstream_resume_request = 130;
+    DownstreamResumeResponse downstream_resume_response = 131;
+    DownstreamCloseRequest downstream_close_request = 132;
+    DownstreamCloseResponse downstream_close_response = 133;
+    DownstreamChunk downstream_chunk = 134;
+    DownstreamChunkAck downstream_chunk_ack = 135;
+    DownstreamChunkAckComplete downstream_chunk_ack_complete = 136;
+    DownstreamMetadata downstream_metadata = 137;
+    DownstreamMetadataAck downstream_metadata_ack = 138;
+
+    // Ping/Pong
+    Ping ping = 192;
+    Pong pong = 193;
+
+    // E2E Call
+    UpstreamCall upstream_call = 256;
+    UpstreamCallAck upstream_call_ack = 257;
+    DownstreamCall downstream_call = 258;
+  }
+}

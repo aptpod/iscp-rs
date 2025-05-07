@@ -1,4 +1,4 @@
-//! WebSocket transport, including support for connecting through a proxy.
+//! WebSocketトランスポートの実装
 
 use bytes::BytesMut;
 use reqwest_websocket::{Message, RequestBuilderExt};

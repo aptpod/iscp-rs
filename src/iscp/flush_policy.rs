@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-/// Flush policy for iSCP upstream.
+/// アップストリームのフラッシュポリシー
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum FlushPolicy {
     None,

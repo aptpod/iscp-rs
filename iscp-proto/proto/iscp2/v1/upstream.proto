@@ -1,0 +1,101 @@
+syntax = "proto3";
+package iscp2.v1;
+
+import "iscp2/v1/common.proto";
+import "iscp2/v1/extensions/upstream.proto";
+import "iscp2/v1/metadata.proto";
+import "iscp2/v1/result_code.proto";
+
+//
+// iSCP Messages
+//
+
+message UpstreamOpenRequest {
+  uint32 request_id = 1;
+  string session_id = 2;
+  uint32 ack_interval = 3;
+  uint32 expiry_interval = 5;
+  repeated DataID data_ids = 6;
+  QoS qos = 7;
+  iscp2.v1.extensions.UpstreamOpenRequestExtensionFields extension_fields = 8;
+}
+
+message UpstreamOpenResponse {
+  uint32 request_id = 1;
+  bytes assigned_stream_id = 2;
+  uint32 assigned_stream_id_alias = 3;
+  map<uint32, DataID> data_id_aliases = 4;
+  sint64 server_time = 5;
+  ResultCode result_code = 6;
+  string result_string = 7;
+  iscp2.v1.extensions.UpstreamOpenResponseExtensionFields extension_fields = 8;
+}
+
+message UpstreamResumeRequest {
+  uint32 request_id = 1;
+  bytes stream_id = 2;
+  iscp2.v1.extensions.UpstreamResumeRequestExtensionFields extension_fields = 3;
+}
+
+message UpstreamResumeResponse {
+  uint32 request_id = 1;
+  uint32 assigned_stream_id_alias = 2;
+  ResultCode result_code = 3;
+  string result_string = 4;
+  iscp2.v1.extensions.UpstreamResumeResponseExtensionFields extension_fields = 5;
+}
+
+message UpstreamCloseRequest {
+  uint32 request_id = 1;
+  bytes stream_id = 2;
+  uint64 total_data_points = 3;
+  uint32 final_sequence_number = 4;
+  iscp2.v1.extensions.UpstreamCloseRequestExtensionFields extension_fields = 5;
+}
+
+message UpstreamCloseResponse {
+  uint32 request_id = 1;
+  ResultCode result_code = 2;
+  string result_string = 3;
+  iscp2.v1.extensions.UpstreamCloseResponseExtensionFields extension_fields = 4;
+}
+
+message UpstreamChunk {
+  uint32 stream_id_alias = 1;
+  StreamChunk stream_chunk = 2;
+  repeated DataID data_ids = 3;
+  iscp2.v1.extensions.UpstreamChunkExtensionFields extension_fields = 4;
+}
+
+message UpstreamChunkAck {
+  uint32 stream_id_alias = 1;
+  repeated UpstreamChunkResult results = 2;
+  map<uint32, DataID> data_id_aliases = 3;
+  iscp2.v1.extensions.UpstreamChunkAckExtensionFields extension_fields = 4;
+}
+
+message UpstreamMetadata {
+  uint32 request_id = 1;
+  oneof metadata {
+    BaseTime base_time = 2;
+  }
+  iscp2.v1.extensions.UpstreamMetadataExtensionFields extension_fields = 4;
+}
+
+message UpstreamMetadataAck {
+  uint32 request_id = 1;
+  ResultCode result_code = 2;
+  string result_string = 3;
+  iscp2.v1.extensions.UpstreamMetadataAckExtensionFields extension_fields = 4;
+}
+
+//
+// Internals
+//
+
+message UpstreamChunkResult {
+  uint32 sequence_number = 1;
+  ResultCode result_code = 2;
+  string result_string = 3;
+  iscp2.v1.extensions.UpstreamChunkResultExtensionFields extension_fields = 4;
+}

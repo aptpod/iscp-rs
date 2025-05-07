@@ -4,6 +4,7 @@ use bytes::BytesMut;
 
 use crate::transport::TransportError;
 
+/// 圧縮方法の定義
 #[derive(Clone, Debug, Default)]
 pub struct Compression {
     enabled: bool,
@@ -12,10 +13,12 @@ pub struct Compression {
 }
 
 impl Compression {
+    /// [`Compression`] の作成
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// 圧縮の有効化
     pub fn enable(mut self, level: i8) -> Self {
         self.enabled = true;
         self.level = Some(level);
@@ -23,6 +26,7 @@ impl Compression {
         self
     }
 
+    /// コンテキストを有効にした圧縮の有効化
     pub fn enable_with_window_bits(mut self, level: i8, window_bits: u8) -> Self {
         self.enabled = true;
         self.level = Some(level);
@@ -30,6 +34,7 @@ impl Compression {
         self
     }
 
+    /// 圧縮の無効化
     pub fn disable(mut self) -> Self {
         self.enabled = false;
         self.level = None;
@@ -45,18 +50,22 @@ impl Compression {
         )
     }
 
+    /// 圧縮の有効化を取得
     pub fn enabled(&self) -> bool {
         self.enabled
     }
 
+    /// 圧縮レベルを取得
     pub fn level(&self) -> Option<i8> {
         self.level
     }
 
+    /// コンテキストの有効・無効を取得
     pub fn context_takeover(&self) -> bool {
         self.window_bits.is_some()
     }
 
+    /// window bitsの値を取得
     pub fn window_bits(&self) -> Option<u8> {
         self.window_bits
     }
@@ -251,7 +260,7 @@ impl Extractor {
 }
 
 #[derive(Debug)]
-pub struct DictionaryBuffer {
+pub(crate) struct DictionaryBuffer {
     size: usize,
     buf: Vec<u8>,
 }

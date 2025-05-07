@@ -34,7 +34,7 @@ pub fn from_qos_i32(qos: i32) -> Result<QoS, Error> {
     QoS::try_from(qos).map_err(|e| Error::invalid_value(e.to_string()))
 }
 
-/// Return value of callbacks.
+/// コールバックの戻り値型
 pub struct CallbackReturnValue {
     future: Option<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>,
 }

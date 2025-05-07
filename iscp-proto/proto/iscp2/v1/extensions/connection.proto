@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package iscp2.v1.extensions;
+
+message ConnectRequestExtensionFields {
+  string access_token = 1;
+  IntdashExtensionFields intdash = 1024;
+}
+
+message IntdashExtensionFields {
+  string project_uuid = 1;
+}
+
+message ConnectResponseExtensionFields {}
+
+message DisconnectExtensionFields {}

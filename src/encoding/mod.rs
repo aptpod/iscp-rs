@@ -1,4 +1,4 @@
-//! Encoding definitions.
+//! エンコード定義
 
 use bytes::BytesMut;
 

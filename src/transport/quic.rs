@@ -1,3 +1,5 @@
+//! Quicトランスポートの実装
+
 use std::{
     collections::VecDeque,
     net::{IpAddr, SocketAddr},

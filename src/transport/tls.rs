@@ -58,6 +58,7 @@ impl rustls::client::danger::ServerCertVerifier for SkipServerVerification {
     }
 }
 
+/// 証明書データ
 #[derive(Clone, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum Certificate {

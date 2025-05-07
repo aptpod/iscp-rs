@@ -26,30 +26,31 @@ use crate::{
     wire::Conn as WireConn,
 };
 
-/// Downstream configuration.
+/// ダウンストリームの設定
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct DownstreamConfig {
-    /// Filters.
+    /// フィルタ
     pub filters: Vec<DownstreamFilter>,
-    /// Resume expiry interval.
+    /// ストリーム再開の有効期限
     pub expiry_interval: Duration,
-    /// Stream QoS.
+    /// ストリームのQoS
     pub qos: QoS,
-    /// Data ids for setting data id alias
+    /// データIDエイリアスの設定に用いるデータIDのリスト
     pub data_ids: Vec<DataId>,
-    /// Ack interval.
+    /// ACKの返信間隔
     pub ack_interval: Duration,
-    /// Omit empty chunk or not.
+    /// 空のチャンクを捨てるかの設定
     pub omit_empty_chunk: bool,
-    /// Chunk reordering rule (reliable only).
+    /// Reliable用のチャンク並び替えの設定
     pub reordering: DownstreamReordering,
-    /// The number of chunks to wait in reordering.
+    /// 並び替えを待つチャンクの最大値
     pub reordering_chunks: usize,
-    /// Close timeout.
+    /// クローズのタイムアウト
     pub close_timeout: Duration,
 }
 
+/// Reliable用のチャンク並び替えの設定
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum DownstreamReordering {
     #[default]
@@ -74,13 +75,13 @@ impl Default for DownstreamConfig {
     }
 }
 
-/// An iSCP downstream.
+/// iSCPのダウンストリーム
 pub struct Downstream {
     inner: Arc<DownstreamInner>,
     rx_downstream_chunk: mpsc::Receiver<DownstreamChunk>,
 }
 
-/// Reader for downstream metadata.
+/// メタデータの読み込みオブジェクト
 pub struct DownstreamMetadataReader {
     inner: Arc<DownstreamInner>,
     rx: mpsc::Receiver<DownstreamMetadata>,
@@ -158,7 +159,7 @@ impl Downstream {
         ))
     }
 
-    /// Read a chunk from this downstream.
+    /// ダウンストリームからチャンクを読み込む
     pub async fn read_chunk(&mut self) -> Result<DownstreamChunk, Error> {
         tokio::select! {
             result = self.rx_downstream_chunk.recv() => {
@@ -172,7 +173,7 @@ impl Downstream {
             .map_err(|_| self.inner.close_cause.take().unwrap_or(Error::StreamClosed))
     }
 
-    /// Close this downstream.
+    /// このダウンストリームを閉じる
     pub async fn close(&mut self) -> Result<(), Error> {
         let (tx, rx) = oneshot::channel();
         self.inner.tx_result.store(Some(tx));
@@ -183,22 +184,22 @@ impl Downstream {
             .map_err(|_| Error::unexpected("cannot get close result"))?
     }
 
-    /// Get the stream id.
+    /// ストリームのIDを取得
     pub fn stream_id(&self) -> Uuid {
         self.inner.stream_id
     }
 
-    /// Server time returned at opening this downstream.
+    /// ダウンストリームを開いた時刻を取得
     pub fn server_time(&self) -> SystemTime {
         self.inner.server_time
     }
 
-    /// Get the configuration of this downstream.
+    /// ダウンストリームの設定を取得
     pub fn config(&self) -> Arc<DownstreamConfig> {
         self.inner.config.clone()
     }
 
-    /// Get the current downstream state.
+    /// ダウンストリームの状態を取得
     pub fn state(&self) -> DownstreamState {
         self.inner.state.state()
     }

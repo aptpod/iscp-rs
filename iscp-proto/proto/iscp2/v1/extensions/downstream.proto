@@ -1,0 +1,26 @@
+syntax = "proto3";
+package iscp2.v1.extensions;
+
+message DownstreamOpenRequestExtensionFields {}
+
+message DownstreamOpenResponseExtensionFields {}
+
+message DownstreamResumeRequestExtensionFields {}
+
+message DownstreamResumeResponseExtensionFields {}
+
+message DownstreamCloseRequestExtensionFields {}
+
+message DownstreamCloseResponseExtensionFields {}
+
+message DownstreamChunkExtensionFields {}
+
+message DownstreamChunkAckExtensionFields {}
+
+message DownstreamChunkAckCompleteExtensionFields {}
+
+message DownstreamMetadataExtensionFields {}
+
+message DownstreamMetadataAckExtensionFields {}
+
+message DownstreamChunkResultExtensionFields {}

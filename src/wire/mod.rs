@@ -1,4 +1,4 @@
-//! Wire connection definitions.
+//! Wire層の定義
 
 mod read_loop;
 

@@ -22,7 +22,7 @@ pub(super) struct State {
     results: Mutex<Vec<crate::message::DownstreamChunkResult>>,
 }
 
-/// Downstream state.
+/// ダウンストリームの状態
 pub struct DownstreamState {
     pub data_id_aliases: HashMap<u32, DataId>,
     pub last_issued_data_id_alias: Option<u32>,

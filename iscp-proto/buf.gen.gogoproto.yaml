@@ -1,0 +1,9 @@
+version: v1
+managed:
+  enabled: true
+  go_package_prefix:
+    default: github.com/aptpod/iscp-proto/gen/gogofast
+plugins:
+  - plugin: gogofast
+    out: gen/gogofast
+    opt: paths=source_relative

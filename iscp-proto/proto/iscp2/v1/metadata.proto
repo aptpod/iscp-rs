@@ -1,0 +1,60 @@
+syntax = "proto3";
+package iscp2.v1;
+
+import "iscp2/v1/common.proto";
+
+//
+// Metadata
+//
+
+message BaseTime {
+  string session_id = 1;
+  string name = 2;
+  uint32 priority = 3;
+  uint64 elapsed_time = 4;
+  sint64 base_time = 5;
+}
+
+message UpstreamOpen {
+  bytes stream_id = 1;
+  string session_id = 2;
+  QoS qos = 3;
+}
+
+message UpstreamAbnormalClose {
+  bytes stream_id = 1;
+  string session_id = 2;
+}
+
+message UpstreamResume {
+  bytes stream_id = 1;
+  string session_id = 2;
+  QoS qos = 3;
+}
+
+message UpstreamNormalClose {
+  bytes stream_id = 1;
+  string session_id = 2;
+  uint64 total_data_points = 3;
+  uint32 final_sequence_number = 4;
+}
+
+message DownstreamOpen {
+  bytes stream_id = 1;
+  repeated DownstreamFilter downstream_filters = 2;
+  QoS qos = 3;
+}
+
+message DownstreamAbnormalClose {
+  bytes stream_id = 1;
+}
+
+message DownstreamResume {
+  bytes stream_id = 1;
+  repeated DownstreamFilter downstream_filters = 2;
+  QoS qos = 3;
+}
+
+message DownstreamNormalClose {
+  bytes stream_id = 1;
+}

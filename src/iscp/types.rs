@@ -3,81 +3,82 @@ use std::sync::Arc;
 use bytes::Bytes;
 use uuid::Uuid;
 
-/// Data id.
+/// データID
 pub type DataId = crate::message::DataId;
 
-/// Represents a data point.
+/// データポイント
 pub type DataPoint = crate::message::DataPoint;
 
-/// Data filter.
+/// データフィルタ
 pub type DataFilter = crate::message::DataFilter;
 
-/// Filter for a downstream.
+/// ダウンストリームフィルタ
 pub type DownstreamFilter = crate::message::DownstreamFilter;
 
-/// Quality of Service of a stream.
+/// ストリームのQoS
 pub type QoS = crate::message::QoS;
 
-/// Grouped data points by that data id.
+/// データポイントグループ
 #[derive(Clone, PartialEq, Debug)]
 pub struct DataPointGroup {
-    /// Data id.
+    /// データ型
     pub data_id: DataId,
-    /// Data points.
+    /// データポイント
     pub data_points: Vec<DataPoint>,
 }
 
-/// Upstream chunk.
+/// アップストリームチャンク
 #[derive(Clone, PartialEq, Debug)]
 pub struct UpstreamChunk {
-    /// Sequence number in the upstream.
+    /// アップストリーム内のシーケンス番号
     pub sequence_number: u32,
-    /// Data point groups to send by the upstream.
+    /// アップストリームするデータポイントグループ
     pub data_point_groups: Vec<DataPointGroup>,
 }
 
-/// The server result of the upstream chunk.
+/// アップストリームチャンクのリザルト
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct UpstreamChunkResult {
-    /// Sequence number in the upstream.
+    /// アップストリーム内のシーケンス番号
     pub sequence_number: u32,
-    /// Result code.
+    /// リザルトコード
     pub result_code: crate::message::ResultCode,
-    /// Result string.
+    /// リザルト文字列
     pub result_string: String,
 }
 
-/// A chunk received at a downstream.
+/// ダウンストリームチャンク
 #[derive(Clone, PartialEq, Debug)]
 pub struct DownstreamChunk {
-    /// Sequence number of this chunk.
+    /// ダウンストリーム内のシーケンス番号
     pub sequence_number: u32,
-    /// Data points.
+    /// ダウンストリームしたデータポイントグループ
     pub data_point_groups: Vec<DataPointGroup>,
-    /// Upstream information.
+    /// アップストリームの情報
     pub upstream: Arc<UpstreamInfo>,
 }
 
-/// Metadata received by downstream.
+/// ダウンストリームしたメタデータ
 #[derive(Clone, PartialEq, Debug)]
 pub struct DownstreamMetadata {
-    /// Node id of source
+    /// 送信元のノードID
     pub source_node_id: String,
-    /// Metadata.
+    /// メタデータ
     pub metadata: super::metadata::ReceivableMetadata,
 }
 
-/// Upstream information
+/// アップストリーム情報
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct UpstreamInfo {
-    /// Session id.
+    /// セッションID
     pub session_id: String,
-    /// Stream id.
+    /// ストリームID
     pub stream_id: Uuid,
-    /// Source node id.
+    /// 送信元のノードID
     pub source_node_id: String,
 }
 
+/// E2Eのアップストリームコール
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct UpstreamCall {
     pub destination_node_id: String,
@@ -86,6 +87,7 @@ pub struct UpstreamCall {
     pub payload: Bytes,
 }
 
+/// E2Eのアップストリームリプライコール
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct UpstreamReplyCall {
     pub request_call_id: String,
@@ -95,6 +97,7 @@ pub struct UpstreamReplyCall {
     pub payload: Bytes,
 }
 
+/// E2Eのダウンストリームリプライコール
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct DownstreamReplyCall {
     pub request_call_id: String,
@@ -104,6 +107,7 @@ pub struct DownstreamReplyCall {
     pub payload: Bytes,
 }
 
+/// E2Eのダウンストリームコール
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct DownstreamCall {
     pub call_id: String,

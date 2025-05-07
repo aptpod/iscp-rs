@@ -3,6 +3,7 @@ use bytes::BufMut;
 use crate::encoding;
 use crate::transport::TransportError;
 
+/// エンコード方法
 #[derive(Clone, Debug, serde::Serialize)]
 #[non_exhaustive]
 pub enum EncodingName {
@@ -18,6 +19,7 @@ impl From<encoding::Name> for EncodingName {
     }
 }
 
+/// 圧縮タイプ
 #[derive(Clone, Debug, serde::Serialize)]
 pub enum CompressionType {
     #[serde(rename = "per-message")]
@@ -26,6 +28,7 @@ pub enum CompressionType {
     ContextTakeover,
 }
 
+/// 接続開始時のパラメータ
 #[derive(Clone, Debug, serde::Serialize)]
 #[non_exhaustive]
 pub struct NegotiationParams {

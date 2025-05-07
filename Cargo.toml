@@ -1,6 +1,6 @@
 [package]
 name = "iscp-rs"
-version = "1.0.0"
+version = "1.0.1"
 authors = ["aptpod,Inc."]
 edition = "2021"
 description = "iSCPv2 Client Library"

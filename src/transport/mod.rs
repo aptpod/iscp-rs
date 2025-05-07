@@ -1,4 +1,4 @@
-//! Transport methods.
+//! トランスポート
 
 mod compression;
 mod negotiation;
@@ -16,6 +16,7 @@ pub use compression::*;
 pub use negotiation::*;
 pub use tls::Certificate;
 
+/// トランスポートのエラー
 pub struct TransportError {
     inner: Box<dyn std::error::Error + Send + Sync>,
 }
@@ -74,6 +75,7 @@ pub trait TransportCloser: Send {
     fn close(&mut self) -> impl std::future::Future<Output = Result<(), TransportError>> + Send;
 }
 
+/// トランスポート
 pub struct Transport<C: Connector> {
     pub reader: C::Reader,
     pub writer: C::Writer,
