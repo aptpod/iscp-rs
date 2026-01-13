@@ -307,6 +307,6 @@ mod test {
     #[test]
     fn data_id_format() {
         let id = DataId::from_str("type:name").unwrap();
-        assert_eq!(format!("{}", id), "type:name");
+        assert_eq!(format!("{id}"), "type:name");
     }
 }

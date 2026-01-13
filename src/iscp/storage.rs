@@ -62,7 +62,7 @@ impl UpstreamStorage {
                 match convert_upstream_chunk_result(result) {
                     Ok(result) => callback(self.stream_id, result).await,
                     Err(e) => {
-                        log::error!("invalid upstream chunk result: {}", e);
+                        log::error!("invalid upstream chunk result: {e}");
                     }
                 }
             }

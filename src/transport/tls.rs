@@ -75,7 +75,7 @@ impl Certificate {
                     .filter_map(|result| match result {
                         Ok(cert) => Some(cert),
                         Err(e) => {
-                            log::error!("{}", e);
+                            log::error!("{e}");
                             None
                         }
                     })
@@ -98,7 +98,7 @@ impl Certificate {
                     .filter_map(|result| match result {
                         Ok(a) => Some(a),
                         Err(e) => {
-                            log::warn!("error in reading pem: {}", e);
+                            log::warn!("error in reading pem: {e}");
                             None
                         }
                     })
@@ -175,7 +175,7 @@ pub fn load_native_certs() -> Result<Vec<CertificateDer<'static>>, TransportErro
         rustls_native_certs::load_native_certs();
 
     for e in errors {
-        log::warn!("loat native cert error: {}", e);
+        log::warn!("loat native cert error: {e}");
     }
 
     if certs.is_empty() {

@@ -13,8 +13,7 @@ pub fn parse_stream_id(bytes: &[u8]) -> Result<Uuid, Error> {
     match Uuid::from_slice(bytes) {
         Ok(stream_id) => Ok(stream_id),
         Err(e) => Err(Error::invalid_value(format!(
-            "invalid bytes for stream id: {}",
-            e,
+            "invalid bytes for stream id: {e}",
         ))),
     }
 }

@@ -1,6 +1,0 @@
-syntax = "proto3";
-package iscp2.v1.extensions;
-
-message PingExtensionFields {}
-
-message PongExtensionFields {}

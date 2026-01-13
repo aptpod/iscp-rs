@@ -1,4 +1,4 @@
-use super::{types::*, Conn};
+use super::{Conn, types::*};
 use crate::{ConnectionState, Error};
 
 impl Conn {
@@ -12,7 +12,7 @@ impl Conn {
                     if !e.can_retry() {
                         return Err(e);
                     }
-                    log::warn!("e2e call failed and retry: {}", e);
+                    log::warn!("e2e call failed and retry: {e}");
                 }
             }
         }
@@ -28,7 +28,7 @@ impl Conn {
                     if !e.can_retry() {
                         return Err(e);
                     }
-                    log::warn!("e2e call failed and retry: {}", e);
+                    log::warn!("e2e call failed and retry: {e}");
                 }
             }
         }
@@ -49,7 +49,7 @@ impl Conn {
                     if !e.can_retry() {
                         return Err(e);
                     }
-                    log::warn!("e2e call failed and retry: {}", e);
+                    log::warn!("e2e call failed and retry: {e}");
                 }
             }
         }
@@ -65,7 +65,7 @@ impl Conn {
                     if !e.can_retry() {
                         return Err(e);
                     }
-                    log::warn!("e2e call failed and retry: {}", e);
+                    log::warn!("e2e call failed and retry: {e}");
                 }
             }
         }
@@ -81,7 +81,7 @@ impl Conn {
                     if !e.can_retry() {
                         return Err(e);
                     }
-                    log::warn!("e2e call failed and retry: {}", e);
+                    log::warn!("e2e call failed and retry: {e}");
                 }
             }
         }

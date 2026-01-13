@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 
-use super::{downstream::DownstreamReordering, DownstreamChunk, DownstreamConfig, QoS};
+use super::{DownstreamChunk, DownstreamConfig, QoS, downstream::DownstreamReordering};
 use crate::error::Error;
 
 use uuid::Uuid;

@@ -1,8 +1,8 @@
 [package]
 name = "iscp-rs"
-version = "1.0.1"
+version = "1.0.3"
 authors = ["aptpod,Inc."]
-edition = "2021"
+edition = "2024"
 description = "iSCPv2 Client Library"
 documentation = "https://docs.rs/iscp-rs"
 repository = "https://github.com/aptpod/iscp-rs/"
@@ -21,6 +21,7 @@ unstable-webtransport = ["dep:wtransport"]
 anyhow = "1"
 glob = "0.3.0"
 prost-build = "0.13.2"
+protobuf-src = "2.1.1"
 regex = "1"
 
 [dev-dependencies]
@@ -52,7 +53,6 @@ tokio = { version = "1.37.0", features = ["full"] }
 tokio-util = "0.7.11"
 url = "2.5"
 uuid = { version = "1.8.0", features = ["serde", "v4"] }
-webpki = "0.22.0"
 wtransport = { version = "0.6.1", features = ["dangerous-configuration"], optional = true }
 
 [profile.test]

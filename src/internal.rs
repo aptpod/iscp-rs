@@ -80,7 +80,7 @@ pub fn may_send_err<R, E: std::error::Error, T: std::fmt::Display>(
     result: Result<R, E>,
 ) -> bool {
     if let Err(e) = result {
-        log::error!("{}: {}", err_msg, e);
+        log::error!("{err_msg}: {e}");
         if let Some(tx) = tx.take() {
             let _ = tx.send(Err(e));
         }

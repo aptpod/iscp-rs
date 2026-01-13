@@ -9,7 +9,7 @@ use super::{
     Certificate, Connector, NegotiationParams, Transport, TransportCloser, TransportError,
     TransportReader, TransportWriter, UnreliableNotSupported,
 };
-use futures::{stream::SplitStream, SinkExt, StreamExt};
+use futures::{SinkExt, StreamExt, stream::SplitStream};
 
 pub type WebSocketTransport = Transport<WebSocketConnector>;
 
@@ -60,7 +60,7 @@ impl Connector for WebSocketConnector {
         let mut url = url.clone();
         url.set_query(Some(&negotiation_params.to_uri_query_string()?));
 
-        log::debug!("websocket request to {}", url);
+        log::debug!("websocket request to {url}");
 
         let rustls_config = super::tls::rustls_config_client(
             self.skip_server_verification,
@@ -85,7 +85,7 @@ impl Connector for WebSocketConnector {
             .await
             .map_err(TransportError::new)?;
 
-        log::info!("reqwest websocket connector connected to {}", url);
+        log::info!("reqwest websocket connector connected to {url}");
 
         let (mut sink, stream) = websocket.split();
         let (tx_write_message, mut rx_write_message) = mpsc::channel(16);
@@ -93,11 +93,11 @@ impl Connector for WebSocketConnector {
         tokio::spawn(async move {
             while let Some(msg) = rx_write_message.recv().await {
                 if let Err(e) = sink.send(msg).await {
-                    log::debug!("websocket write error {:?}", e);
+                    log::debug!("websocket write error {e:?}");
                     break;
                 }
                 if let Err(e) = sink.flush().await {
-                    log::debug!("websocket flush error {:?}", e);
+                    log::debug!("websocket flush error {e:?}");
                     break;
                 }
             }
@@ -144,11 +144,7 @@ impl TransportReader for WebSocketReader {
             let msg = res.map_err(TransportError::new)?;
             match msg {
                 Message::Close { code, reason } => {
-                    log::debug!(
-                        "receive websocket close frame, code = {}, reason = {}",
-                        code,
-                        reason
-                    );
+                    log::debug!("receive websocket close frame, code = {code}, reason = {reason}");
                     break;
                 }
                 Message::Ping(p) => {

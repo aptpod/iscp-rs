@@ -21,7 +21,7 @@ fn gen_proto() -> Result<()> {
     const AUTOGEN_DIR: &str = "src/message/proto";
 
     let proto_files: Vec<_> = glob::glob(PROTO_SRC_FILES)
-        .unwrap_or_else(|e| panic!("Failed to read {}: {}", PROTO_SRC_FILES, e))
+        .unwrap_or_else(|e| panic!("Failed to read {PROTO_SRC_FILES}: {e}"))
         .filter_map(|res| res.ok())
         .collect();
 
@@ -69,9 +69,7 @@ fn process_generated_files() -> Result<()> {
     let re = regex::Regex::new("pub enum DataIdOrAlias").unwrap();
     for path in PATH {
         let s = std::fs::read_to_string(path)?;
-        let replacer = |_caps: &regex::Captures<'_>| {
-            "#[derive(PartialOrd, Ord, Eq, Hash)]\n    pub enum DataIdOrAlias"
-        };
+        let replacer = |_caps: &regex::Captures<'_>| "#[derive(PartialOrd, Ord, Eq, Hash)]\n    pub enum DataIdOrAlias";
         let s = re.replace_all(&s, replacer);
 
         std::fs::write(path, s.as_bytes())?;

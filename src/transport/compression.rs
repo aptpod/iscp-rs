@@ -43,7 +43,7 @@ impl Compression {
     }
 
     pub(crate) fn converters(&self) -> (Compressor, Extractor) {
-        log::debug!("compression: {:?}", self);
+        log::debug!("compression: {self:?}");
         (
             Compressor::new(self.level, self.window_bits),
             Extractor::new(self.level, self.window_bits),
@@ -92,7 +92,7 @@ impl Compressor {
                     buffer,
                     buffer_increment_size,
                     dictionary: None,
-                }
+                };
             }
         };
 
@@ -214,12 +214,12 @@ impl Extractor {
 
         let decompress = self.decompress.as_mut().unwrap();
         decompress.reset(false);
-        if let Some(dictionary) = &self.dictionary {
-            if !dictionary.dictionary().is_empty() {
-                decompress
-                    .set_dictionary(dictionary.dictionary())
-                    .map_err(TransportError::new)?;
-            }
+        if let Some(dictionary) = &self.dictionary
+            && !dictionary.dictionary().is_empty()
+        {
+            decompress
+                .set_dictionary(dictionary.dictionary())
+                .map_err(TransportError::new)?;
         }
 
         self.buffer.clear();
@@ -301,7 +301,7 @@ impl DictionaryBuffer {
 
 #[cfg(test)]
 mod test {
-    use rand::{distributions::Alphanumeric, Rng};
+    use rand::{Rng, distributions::Alphanumeric};
 
     use super::*;
 

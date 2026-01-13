@@ -10,18 +10,18 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::{
+    SharedWireConn,
     down_order::*,
     down_state::*,
     misc::ReconnectWaiter,
     types::{DataPointGroup, DownstreamChunk, DownstreamMetadata},
-    SharedWireConn,
 };
 use crate::{
     error::Error,
-    internal::{timeout_with_ct, WaitGroup},
+    internal::{WaitGroup, timeout_with_ct},
     message::{
-        data_point_group::DataIdOrAlias, downstream_chunk::UpstreamOrAlias, DataId,
-        DownstreamFilter, QoS, ResultCode,
+        DataId, DownstreamFilter, QoS, ResultCode, data_point_group::DataIdOrAlias,
+        downstream_chunk::UpstreamOrAlias,
     },
     wire::Conn as WireConn,
 };
@@ -145,7 +145,7 @@ impl Downstream {
             std::mem::drop(wg);
         });
 
-        log::info!("opened downstream {}", stream_id);
+        log::info!("opened downstream {stream_id}");
         Ok((
             Self {
                 inner: inner.clone(),
@@ -252,14 +252,14 @@ async fn downstream_loop(
                             Err(e) => {
                                 let result_code = e.result_code();
                                 if result_code == Some(crate::message::ResultCode::StreamNotFound) {
-                                    log::warn!("cancel resume by stream not found: {}", e);
+                                    log::warn!("cancel resume by stream not found: {e}");
                                     break None;
                                 }
                                 if e.can_retry() || result_code.is_some() {
-                                    log::warn!("cannot resume and retry: {}", e);
+                                    log::warn!("cannot resume and retry: {e}");
                                     resume_retry_waiter.wait().await;
                                 } else {
-                                    log::warn!("cannot resume: {}", e);
+                                    log::warn!("cannot resume: {e}");
                                     break None;
                                 }
                             }
@@ -312,12 +312,11 @@ async fn downstream_loop(
                 }
                 _ = tokio::time::sleep_until(ack_send.into()) => {
                     ack_send = Instant::now() + inner.config.ack_interval;
-                    if let Some(ack) = inner.state.take_ack(inner.stream_id_alias.load()) {
-                        if let Err(e) = wire_conn.send_message(ack).await {
-                            log::warn!("cannot send downstream ack: {}", e);
+                    if let Some(ack) = inner.state.take_ack(inner.stream_id_alias.load())
+                        && let Err(e) = wire_conn.send_message(ack).await {
+                            log::warn!("cannot send downstream ack: {e}");
                             break;
                         }
-                    }
                     continue;
                 }
             };
@@ -334,7 +333,7 @@ async fn downstream_loop(
                             }
                         }
                         Err(e) => {
-                            log::error!("{}", e);
+                            log::error!("{e}");
                         }
                         _ => (),
                     }
@@ -347,12 +346,12 @@ async fn downstream_loop(
                                 break;
                             }
                             if let Err(e) = wire_conn.send_message(ack).await {
-                                log::warn!("cannot send metadata ack: {}", e);
+                                log::warn!("cannot send metadata ack: {e}");
                                 break;
                             }
                         }
                         Err(e) => {
-                            log::error!("{}", e);
+                            log::error!("{e}");
                         }
                     }
                 }
@@ -373,7 +372,7 @@ async fn downstream_loop(
                             }
                         }
                         Err(e) => {
-                            log::error!("{}", e);
+                            log::error!("{e}");
                         }
                         _ => (),
                     }
@@ -382,14 +381,14 @@ async fn downstream_loop(
                     match convert_downstream_metadata(metadata) {
                         Ok((metadata, ack)) => {
                             let _ = tx_metadata.try_send(metadata);
-                            if wire_conn.is_connected() {
-                                if let Err(e) = wire_conn.send_message(ack).await {
-                                    log::warn!("cannot send metadata ack: {}", e);
-                                }
+                            if wire_conn.is_connected()
+                                && let Err(e) = wire_conn.send_message(ack).await
+                            {
+                                log::warn!("cannot send metadata ack: {e}");
                             }
                         }
                         Err(e) => {
-                            log::error!("{}", e);
+                            log::error!("{e}");
                         }
                     }
                 }
@@ -400,12 +399,11 @@ async fn downstream_loop(
         }
 
         // Send ack
-        if wire_conn.is_connected() {
-            if let Some(ack) = inner.state.take_ack(inner.stream_id_alias.load()) {
-                if let Err(e) = wire_conn.send_message(ack).await {
-                    log::warn!("cannot send downstream ack: {}", e);
-                }
-            }
+        if wire_conn.is_connected()
+            && let Some(ack) = inner.state.take_ack(inner.stream_id_alias.load())
+            && let Err(e) = wire_conn.send_message(ack).await
+        {
+            log::warn!("cannot send downstream ack: {e}");
         }
 
         if inner.config.expiry_interval.is_zero() || ct.is_cancelled() {
@@ -445,7 +443,7 @@ async fn downstream_loop(
                 };
                 let result =
                     if let Err(e) = wire_conn.request_message_need_response(close_msg).await {
-                        log::warn!("cannot send downstream close message: {}", e);
+                        log::warn!("cannot send downstream close message: {e}");
                         Err(Error::ConnectionClosed)
                     } else {
                         Ok(())
@@ -494,7 +492,7 @@ async fn request_open(
         ..Default::default()
     };
 
-    log::debug!("downstream open request: {:?}", request);
+    log::debug!("downstream open request: {request:?}");
 
     let response = wire_conn.request_message_need_response(request).await?;
     Ok((response, desired_stream_id_alias, data_id_aliases))
@@ -533,7 +531,7 @@ fn convert_downstream_chunk(
                 if let Some(data_id) = inner.state.get_data_id(alias) {
                     data_id
                 } else {
-                    return Err(Error::invalid_value(format!("unknown data id {}", alias)));
+                    return Err(Error::invalid_value(format!("unknown data id {alias}")));
                 }
             }
             None => {

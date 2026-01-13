@@ -15,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     encoding::{Encoder, Encoding},
     error::Error,
-    internal::{timeout_with_ct, Waiter},
+    internal::{Waiter, timeout_with_ct},
     message::{
         DownstreamCall, HasRequestId, HasResultCode, Message, RequestMessage, UpstreamCallAck,
     },
@@ -134,7 +134,7 @@ impl Conn {
                 )
                 .await;
                 if let Err(e) = unreliable_reader.close().await {
-                    log::error!("transport reader close error {}", e);
+                    log::error!("transport reader close error {e}");
                 }
                 log::debug!("exit read loop");
                 std::mem::drop(wg_rw_clone);
@@ -157,7 +157,7 @@ impl Conn {
             )
             .await;
             if let Err(e) = reader.close().await {
-                log::error!("transport reader close error {}", e);
+                log::error!("transport reader close error {e}");
             }
             log::debug!("exit read loop");
             std::mem::drop(wg_rw_clone);
@@ -169,7 +169,7 @@ impl Conn {
         tokio::spawn(async move {
             write_loop(inner_clone, &mut writer, rx_write_message, e, compressor).await;
             if let Err(e) = writer.close().await {
-                log::error!("transport writer close error {}", e);
+                log::error!("transport writer close error {e}");
             }
             log::debug!("exit write loop");
             std::mem::drop(wg_rw);
@@ -318,7 +318,7 @@ impl Conn {
         ),
         Error,
     > {
-        log::debug!("add upstream stream_id_alias = {}", stream_id_alias);
+        log::debug!("add upstream stream_id_alias = {stream_id_alias}");
 
         let (tx, rx) = mpsc::channel(self.inner.channel_size);
         let command = ReadLoopCommand::AddUpstream {
@@ -350,7 +350,7 @@ impl Conn {
         ),
         Error,
     > {
-        log::debug!("add downstream stream_id_alias = {}", stream_id_alias);
+        log::debug!("add downstream stream_id_alias = {stream_id_alias}");
 
         let (tx, rx) = mpsc::channel(self.inner.channel_size);
 
@@ -455,17 +455,17 @@ async fn write_loop<T: TransportWriter>(
                 break;
             }
         };
-        log::trace!("write message: {:?}", msg);
+        log::trace!("write message: {msg:?}");
         if let Err(e) = encoder.encode_to(&mut buf, &msg) {
-            log::warn!("cannot encode message: {}", e);
+            log::warn!("cannot encode message: {e}");
             continue;
         }
         if let Err(e) = compressor.compress(&mut buf) {
-            log::error!("message compression error: {}", e);
+            log::error!("message compression error: {e}");
             return;
         }
         if let Err(e) = writer.write(&buf).await {
-            log::error!("transport write error: {}", e);
+            log::error!("transport write error: {e}");
             return;
         }
     }
@@ -473,17 +473,17 @@ async fn write_loop<T: TransportWriter>(
     // Write all remaining messages
     while let Ok(msg) = rx_write_message.try_recv() {
         buf.clear();
-        log::trace!("write message: {:?}", msg);
+        log::trace!("write message: {msg:?}");
         if let Err(e) = encoder.encode_to(&mut buf, &msg) {
-            log::warn!("cannot encode message: {}", e);
+            log::warn!("cannot encode message: {e}");
             continue;
         }
         if let Err(e) = compressor.compress(&mut buf) {
-            log::error!("message compression error: {}", e);
+            log::error!("message compression error: {e}");
             return;
         }
         if let Err(e) = writer.write(&buf).await {
-            log::error!("transport write error: {}", e);
+            log::error!("transport write error: {e}");
             return;
         }
     }
@@ -494,7 +494,7 @@ async fn close_task<T: Connector>(inner: Arc<ConnInner>, mut closer: T::Closer) 
     // closer.close() is called after reader and writer close
     inner.waiter_rw.wait().await;
     if let Err(e) = closer.close().await {
-        log::error!("transport close error: {}", e);
+        log::error!("transport close error: {e}");
     }
 }
 

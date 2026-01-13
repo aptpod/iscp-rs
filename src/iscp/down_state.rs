@@ -6,9 +6,9 @@ use crossbeam::atomic::AtomicCell;
 use fnv::FnvHashMap;
 use uuid::Uuid;
 
+use crate::Error;
 use crate::internal::conv_hasher;
 use crate::message::ResultCode;
-use crate::Error;
 
 use super::misc::parse_stream_id;
 use super::types::*;
@@ -93,7 +93,7 @@ impl State {
             .unwrap()
             .get(&alias)
             .cloned()
-            .ok_or_else(|| Error::invalid_value(format!("unknown upstream info alias ({})", alias)))
+            .ok_or_else(|| Error::invalid_value(format!("unknown upstream info alias ({alias})")))
     }
 
     pub fn take_ack(&self, stream_id_alias: u32) -> Option<crate::message::DownstreamChunkAck> {

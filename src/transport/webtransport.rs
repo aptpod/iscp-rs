@@ -7,9 +7,9 @@ use tokio_util::sync::CancellationToken;
 use url::Url;
 
 use super::{
-    datagram::{FrameBuf, Splitter},
     Certificate, Connector, NegotiationParams, Transport, TransportCloser, TransportError,
     TransportReader, TransportWriter,
+    datagram::{FrameBuf, Splitter},
 };
 
 pub type WebTransportTransport = Transport<WebTransportCloser>;
@@ -102,7 +102,7 @@ impl Connector for WebTransportConnector {
         } else {
             max_datagram_size
         };
-        log::info!("max datagram size: {} bytes", max_datagram_size);
+        log::info!("max datagram size: {max_datagram_size} bytes");
 
         // Open send stream
         let send_stream = connection
@@ -177,14 +177,14 @@ async fn read_recv_stream(
     loop {
         let mut len = [0; 4];
         if let Err(e) = cancelled_return!(ct, recv_stream.read_exact(&mut len)) {
-            log::warn!("cannot read from webtransport recv stream: {}", e);
+            log::warn!("cannot read from webtransport recv stream: {e}");
             return;
         }
         let len = BigEndian::read_u32(&len) as usize;
 
         let mut buf = vec![0; len];
         if let Err(e) = cancelled_return!(ct, recv_stream.read_exact(&mut buf[..])) {
-            log::warn!("cannot read from webtransport recv stream: {}", e);
+            log::warn!("cannot read from webtransport recv stream: {e}");
             return;
         }
         if tx.send(buf).await.is_err() {
@@ -259,7 +259,7 @@ impl TransportReader for WebTransportUnreliableReader {
             let frame = match self.connection.receive_datagram().await {
                 Ok(frame) => frame,
                 Err(e) => {
-                    log::warn!("cannot read datagram: {}", e);
+                    log::warn!("cannot read datagram: {e}");
                     return Err(TransportError::new(e));
                 }
             };

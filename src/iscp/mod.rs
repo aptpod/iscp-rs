@@ -15,7 +15,7 @@ use std::{
     time::Duration,
 };
 
-use tokio::sync::{watch, Semaphore};
+use tokio::sync::{Semaphore, watch};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -436,10 +436,10 @@ async fn reconnection_loop<C: Connector>(
                     ..Default::default()
                 };
                 if let Err(e) = wire_conn.send_message(msg).await {
-                    log::warn!("cannot send disconnect message: {}", e);
+                    log::warn!("cannot send disconnect message: {e}");
                 }
                 if let Err(e) = wire_conn.close().await {
-                    log::error!("close error: {}", e);
+                    log::error!("close error: {e}");
                 }
                 return;
             }
@@ -466,7 +466,7 @@ async fn reconnection_loop<C: Connector>(
                     break;
                 }
                 Err(e) => {
-                    log::info!("reconnection failed: {}", e);
+                    log::info!("reconnection failed: {e}");
                 }
             }
         }

@@ -2,7 +2,7 @@
 
 use std::time::SystemTime;
 
-use crate::message::{downstream_metadata::Metadata as MetadataEnum, DownstreamFilter, QoS};
+use crate::message::{DownstreamFilter, QoS, downstream_metadata::Metadata as MetadataEnum};
 
 use super::misc::{from_qos_i32, parse_stream_id, unix_epoch_to_system_time};
 use super::*;

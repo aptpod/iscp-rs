@@ -35,10 +35,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         loop {
             tokio::select! {
                 Ok(chunk) = down.read_chunk() => {
-                    println!("received: {:?}", chunk);
+                    println!("received: {chunk:?}");
                 }
                 Ok(metadata) = metadata_reader.read() => {
-                    println!("received: {:?}", metadata);
+                    println!("received: {metadata:?}");
                 }
                 else => break,
             }
@@ -46,7 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let callback: iscp::ReceiveAckCallback = Arc::new(|_, result| {
-        println!("received upstream ack: {:?}", result);
+        println!("received upstream ack: {result:?}");
         iscp::CallbackReturnValue::complete()
     });
 
@@ -75,7 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .write_data_points(
                 iscp::DataId::new("test", "string"),
                 vec![iscp::DataPoint {
-                    payload: format!("seq = {}", i).into_bytes().into(),
+                    payload: format!("seq = {i}").into_bytes().into(),
                     elapsed_time: elapsed_time.as_nanos().try_into().unwrap(),
                 }],
             )

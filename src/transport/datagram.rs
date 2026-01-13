@@ -33,7 +33,8 @@ impl Splitter {
         let mut buf = BytesMut::new();
 
         let max_segment_i = data.len() / self.max_segment_size;
-        let max_segment_i = if data.len() % self.max_segment_size == 0 && max_segment_i > 0 {
+        let max_segment_i = if data.len().is_multiple_of(self.max_segment_size) && max_segment_i > 0
+        {
             max_segment_i - 1
         } else {
             max_segment_i

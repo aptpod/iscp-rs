@@ -6,21 +6,21 @@ use std::{
 };
 
 use crossbeam::atomic::AtomicCell;
-use tokio::sync::{oneshot, Notify};
+use tokio::sync::{Notify, oneshot};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::{
+    DataPoint, DataPointGroup, SharedWireConn,
     flush_policy::FlushPolicy,
     misc::CallbackReturnValue,
     types::{UpstreamChunk, UpstreamChunkResult},
-    DataPoint, DataPointGroup, SharedWireConn,
 };
 use super::{misc::ReconnectWaiter, storage::*};
 use crate::{
     error::Error,
-    internal::{may_send_err, timeout_with_ct, WaitGroup},
-    message::{data_point_group::DataIdOrAlias, DataId, QoS},
+    internal::{WaitGroup, may_send_err, timeout_with_ct},
+    message::{DataId, QoS, data_point_group::DataIdOrAlias},
     wire::Conn as WireConn,
 };
 
@@ -170,7 +170,7 @@ impl Upstream {
             std::mem::drop(wg);
         });
 
-        log::info!("opened upstream {}", stream_id);
+        log::info!("opened upstream {stream_id}");
         Ok((Self { inner }, ct))
     }
 
@@ -321,7 +321,7 @@ async fn upstream_loop(
 
         // Resend in reliable
         if let Err(e) = flusher.after_resume(&wire_conn).await {
-            log::warn!("cannot resend: {}", e);
+            log::warn!("cannot resend: {e}");
             inner.is_connected.store(false);
             if inner.config.expiry_interval.is_zero() || ct.is_cancelled() {
                 return;
@@ -653,7 +653,7 @@ async fn request_open(
         ..Default::default()
     };
 
-    log::debug!("upstream open request: {:?}", request);
+    log::debug!("upstream open request: {request:?}");
 
     static FAIL_TEST: std::sync::LazyLock<bool> =
         std::sync::LazyLock::new(|| std::env::var("ISCP_OPEN_UPSTREAM_FAIL_TEST").is_ok());
@@ -701,14 +701,14 @@ async fn get_conn_and_resume(
                         Err(e) => {
                             let result_code = e.result_code();
                             if result_code == Some(crate::message::ResultCode::StreamNotFound) {
-                                log::warn!("cancel resume by stream not found: {}", e);
+                                log::warn!("cancel resume by stream not found: {e}");
                                 break None;
                             }
                             if e.can_retry() || result_code.is_some() {
-                                log::warn!("cannot resume and retry: {}", e);
+                                log::warn!("cannot resume and retry: {e}");
                                 resume_retry_waiter.wait().await;
                             } else {
-                                log::warn!("cannot resume: {}", e);
+                                log::warn!("cannot resume: {e}");
                                 break None;
                             }
                         }

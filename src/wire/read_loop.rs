@@ -7,8 +7,8 @@ use super::*;
 use crate::{
     encoding::Decoder,
     message::{
-        message::Message as MessageEnum, DownstreamCall, DownstreamChunk,
-        DownstreamChunkAckComplete, DownstreamMetadata, Message, UpstreamCallAck, UpstreamChunkAck,
+        DownstreamCall, DownstreamChunk, DownstreamChunkAckComplete, DownstreamMetadata, Message,
+        UpstreamCallAck, UpstreamChunkAck, message::Message as MessageEnum,
     },
     transport::Extractor,
 };
@@ -44,7 +44,7 @@ pub(super) async fn read_loop<T: TransportReader>(
             }
             result = reader.read(&mut buf) => {
                 if let Err(e) = result {
-                    log::error!("transport read error: {}", e);
+                    log::error!("transport read error: {e}");
                     return;
                 }
             }
@@ -54,17 +54,17 @@ pub(super) async fn read_loop<T: TransportReader>(
         }
 
         if let Err(e) = extractor.extract(&mut buf) {
-            log::error!("message extraction error: {}", e);
+            log::error!("message extraction error: {e}");
             return;
         }
         let msg = match decoder.decode_from(&buf) {
             Ok(msg) => msg,
             Err(e) => {
-                log::error!("cannot decode message from stream: {}", e);
+                log::error!("cannot decode message from stream: {e}");
                 return;
             }
         };
-        log::trace!("read message: {:?}", msg);
+        log::trace!("read message: {msg:?}");
 
         let msg = match msg.message {
             Some(MessageEnum::Ping(ping)) => {
@@ -72,13 +72,13 @@ pub(super) async fn read_loop<T: TransportReader>(
                     request_id: ping.request_id(),
                     ..Default::default()
                 };
-                if inner.tx_write_message.send(pong.into()).await.is_err() {
+                if cancelled_return!(inner.ct, inner.tx_write_message.send(pong.into())).is_err() {
                     return;
                 }
                 continue;
             }
             Some(MessageEnum::Pong(pong)) => {
-                if tx_pong.send(pong).await.is_err() {
+                if cancelled_return!(inner.ct, tx_pong.send(pong)).is_err() {
                     return;
                 }
                 continue;
@@ -100,17 +100,16 @@ pub(super) async fn read_loop<T: TransportReader>(
             _ => msg,
         };
 
-        let Err(msg) = channels.process_message(msg).await else {
+        let Err(msg) = cancelled_return!(inner.ct, channels.process_message(msg)) else {
             continue;
         };
 
-        if let Some(request_id) = msg.request_id() {
-            if request_id % 2 == 0 {
-                if let Some(sender) = inner.remove_response_sender(request_id) {
-                    check_result!(debug, sender.send(msg), "response channel closed");
-                    continue;
-                }
-            }
+        if let Some(request_id) = msg.request_id()
+            && request_id % 2 == 0
+            && let Some(sender) = inner.remove_response_sender(request_id)
+        {
+            check_result!(debug, sender.send(msg), "response channel closed");
+            continue;
         }
 
         log::trace!("drop received message");
@@ -161,7 +160,7 @@ impl ReadLoopChannels {
                     .insert(stream_id_alias, tx_upstream_chunk_ack)
                     .is_some()
                 {
-                    log::warn!("stream id alias {} (up) may be duplicated", stream_id_alias);
+                    log::warn!("stream id alias {stream_id_alias} (up) may be duplicated");
                 }
             }
             ReadLoopCommand::RemoveUpstream { stream_id_alias } => {
@@ -170,7 +169,7 @@ impl ReadLoopChannels {
                     .remove(&stream_id_alias)
                     .is_none()
                 {
-                    log::warn!("stream id alias {} (up) not registered", stream_id_alias);
+                    log::warn!("stream id alias {stream_id_alias} (up) not registered");
                 }
             }
             ReadLoopCommand::AddDownstream {
@@ -182,15 +181,12 @@ impl ReadLoopChannels {
                     .insert(stream_id_alias, tx_downstream_msg)
                     .is_some()
                 {
-                    log::warn!(
-                        "stream id alias {} (down) may be duplicated",
-                        stream_id_alias
-                    );
+                    log::warn!("stream id alias {stream_id_alias} (down) may be duplicated");
                 }
             }
             ReadLoopCommand::RemoveDownstream { stream_id_alias } => {
                 if self.tx_downstream_msg.remove(&stream_id_alias).is_none() {
-                    log::warn!("stream id alias {} (down) not registered", stream_id_alias);
+                    log::warn!("stream id alias {stream_id_alias} (down) not registered");
                 }
             }
             ReadLoopCommand::SubscribeCallAck { call_id, tx } => {
@@ -276,5 +272,202 @@ impl DownstreamCallReceiver {
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => (),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::transport::TransportError;
+    use tokio::sync::mpsc;
+    use tokio::time::{Duration, timeout};
+    use tokio_util::sync::CancellationToken;
+
+    #[derive(Debug)]
+    struct MockTransportReader {
+        should_block: bool,
+    }
+
+    impl MockTransportReader {
+        fn new(should_block: bool) -> Self {
+            Self { should_block }
+        }
+    }
+
+    impl TransportReader for MockTransportReader {
+        async fn read(&mut self, _buf: &mut BytesMut) -> Result<(), TransportError> {
+            if self.should_block {
+                // Block forever to test cancellation
+                std::future::pending().await
+            } else {
+                // Simulate a read error to terminate the loop
+                Err(TransportError::new(std::io::Error::other("mock error")))
+            }
+        }
+
+        async fn close(&mut self) -> Result<(), TransportError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_read_loop_cancellation_handling() {
+        let ct = CancellationToken::new();
+        let (waiter, _wg) = crate::internal::Waiter::new();
+        let (waiter_rw, _wg_rw) = crate::internal::Waiter::new();
+
+        let inner = Arc::new(ConnInner {
+            tx_write_message: mpsc::channel(1).0,
+            tx_unreliable_write_message: None,
+            tx_read_loop_command: mpsc::unbounded_channel().0,
+            tx_unreliable_read_loop_command: None,
+            rx_downstream_call: broadcast::channel(1).1,
+            response_senders: Mutex::new(Default::default()),
+            request_id_counter: RequestIdCounter::new(),
+            ct: ct.clone(),
+            waiter,
+            waiter_rw,
+            response_message_timeout: Duration::from_secs(10),
+            downstream_stream_id_alias_counter: Default::default(),
+            channel_size: 100,
+        });
+
+        let (tx_pong, _rx_pong) = mpsc::channel(1);
+        let (tx_downstream_call, _rx_downstream_call) = broadcast::channel(1);
+        let (_tx_command, rx_command) = mpsc::unbounded_channel();
+
+        let mut mock_reader = MockTransportReader::new(true); // Will block
+        let decoder = crate::encoding::Decoder {};
+        let extractor = crate::transport::Extractor::new(None, None);
+
+        // Cancel immediately
+        ct.cancel();
+
+        let result = timeout(
+            Duration::from_millis(100),
+            read_loop(
+                inner,
+                &mut mock_reader,
+                rx_command,
+                tx_pong,
+                tx_downstream_call,
+                decoder,
+                extractor,
+            ),
+        )
+        .await;
+
+        // The read loop should exit quickly due to cancellation
+        assert!(
+            result.is_ok(),
+            "read_loop should exit quickly when cancelled"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_read_loop_with_transport_error() {
+        let ct = CancellationToken::new();
+        let (waiter, _wg) = crate::internal::Waiter::new();
+        let (waiter_rw, _wg_rw) = crate::internal::Waiter::new();
+
+        let inner = Arc::new(ConnInner {
+            tx_write_message: mpsc::channel(1).0,
+            tx_unreliable_write_message: None,
+            tx_read_loop_command: mpsc::unbounded_channel().0,
+            tx_unreliable_read_loop_command: None,
+            rx_downstream_call: broadcast::channel(1).1,
+            response_senders: Mutex::new(Default::default()),
+            request_id_counter: RequestIdCounter::new(),
+            ct: ct.clone(),
+            waiter,
+            waiter_rw,
+            response_message_timeout: Duration::from_secs(10),
+            downstream_stream_id_alias_counter: Default::default(),
+            channel_size: 100,
+        });
+
+        let (tx_pong, _rx_pong) = mpsc::channel(1);
+        let (tx_downstream_call, _rx_downstream_call) = broadcast::channel(1);
+        let (_tx_command, rx_command) = mpsc::unbounded_channel();
+
+        let mut mock_reader = MockTransportReader::new(false); // Will return error
+        let decoder = crate::encoding::Decoder {};
+        let extractor = crate::transport::Extractor::new(None, None);
+
+        // Should exit due to transport error
+        let result = timeout(
+            Duration::from_millis(100),
+            read_loop(
+                inner,
+                &mut mock_reader,
+                rx_command,
+                tx_pong,
+                tx_downstream_call,
+                decoder,
+                extractor,
+            ),
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "read_loop should exit due to transport error"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cancellation_during_blocking_operations() {
+        let ct = CancellationToken::new();
+        let (waiter, _wg) = crate::internal::Waiter::new();
+        let (waiter_rw, _wg_rw) = crate::internal::Waiter::new();
+
+        let inner = Arc::new(ConnInner {
+            tx_write_message: mpsc::channel(1).0,
+            tx_unreliable_write_message: None,
+            tx_read_loop_command: mpsc::unbounded_channel().0,
+            tx_unreliable_read_loop_command: None,
+            rx_downstream_call: broadcast::channel(1).1,
+            response_senders: Mutex::new(Default::default()),
+            request_id_counter: RequestIdCounter::new(),
+            ct: ct.clone(),
+            waiter,
+            waiter_rw,
+            response_message_timeout: Duration::from_secs(10),
+            downstream_stream_id_alias_counter: Default::default(),
+            channel_size: 100,
+        });
+
+        let (tx_pong, _rx_pong) = mpsc::channel(1);
+        let (tx_downstream_call, _rx_downstream_call) = broadcast::channel(1);
+        let (_tx_command, rx_command) = mpsc::unbounded_channel();
+
+        let mut mock_reader = MockTransportReader::new(true); // Will block
+        let decoder = crate::encoding::Decoder {};
+        let extractor = crate::transport::Extractor::new(None, None);
+
+        // Start the read loop
+        let read_loop_task = tokio::spawn(async move {
+            read_loop(
+                inner,
+                &mut mock_reader,
+                rx_command,
+                tx_pong,
+                tx_downstream_call,
+                decoder,
+                extractor,
+            )
+            .await;
+        });
+
+        // Let it run briefly then cancel
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        ct.cancel();
+
+        // Should exit promptly due to cancellation
+        let result = timeout(Duration::from_millis(100), read_loop_task).await;
+        assert!(
+            result.is_ok(),
+            "read_loop should respect cancellation token"
+        );
     }
 }
