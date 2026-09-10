@@ -260,6 +260,11 @@ impl Drop for SendCommandGuard {
 pub(crate) struct DownstreamCallReceiver(pub(super) broadcast::Receiver<DownstreamCall>);
 
 impl DownstreamCallReceiver {
+    #[cfg(test)]
+    pub(crate) fn new(rx: broadcast::Receiver<DownstreamCall>) -> Self {
+        Self(rx)
+    }
+
     pub async fn recv(&mut self) -> Result<DownstreamCall, Error> {
         loop {
             match self.0.recv().await {
@@ -269,7 +274,10 @@ impl DownstreamCallReceiver {
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                     return Err(Error::ConnectionClosed);
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => (),
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    // The dropped calls are unrecoverable; log and continue from the tail.
+                    log::warn!("downstream call receiver lagged, {skipped} call(s) dropped");
+                }
             }
         }
     }
@@ -469,5 +477,65 @@ mod tests {
             result.is_ok(),
             "read_loop should respect cancellation token"
         );
+    }
+
+    // A burst published before the receiver polls must arrive without loss now
+    // that the channel is sized with `channel_size` instead of 1.
+    #[tokio::test]
+    async fn test_downstream_call_receiver_buffers_burst_without_loss() {
+        const CHANNEL_SIZE: usize = 1024;
+        const BURST: usize = 8;
+
+        let (tx, rx) = broadcast::channel(CHANNEL_SIZE);
+        let mut receiver = DownstreamCallReceiver::new(rx);
+
+        // Publish the whole burst before the receiver polls.
+        for i in 0..BURST {
+            let call = DownstreamCall {
+                call_id: format!("call-{i}"),
+                request_call_id: format!("req-{i}"),
+                ..Default::default()
+            };
+            tx.send(call).expect("send should succeed with a receiver");
+        }
+
+        // All calls must be received in order, none dropped.
+        for i in 0..BURST {
+            let call = timeout(Duration::from_secs(1), receiver.recv())
+                .await
+                .expect("recv should not hang")
+                .expect("recv should not error");
+            assert_eq!(
+                call.request_call_id,
+                format!("req-{i}"),
+                "burst call {i} must be received without loss"
+            );
+        }
+    }
+
+    // At capacity 1, older calls are dropped and surface as a `Lagged` error
+    // rather than being silently collapsed.
+    #[tokio::test]
+    async fn test_downstream_call_receiver_capacity_one_drops_and_lags() {
+        let (tx, rx) = broadcast::channel(1);
+        // Subscribe before sending so the receiver observes the lag.
+        let mut raw_rx = rx.resubscribe();
+        std::mem::drop(rx);
+
+        for i in 0..3 {
+            let call = DownstreamCall {
+                request_call_id: format!("req-{i}"),
+                ..Default::default()
+            };
+            tx.send(call).expect("send should succeed");
+        }
+
+        // At capacity 1 the receiver reports a lag of the dropped calls.
+        match raw_rx.try_recv() {
+            Err(broadcast::error::TryRecvError::Lagged(skipped)) => {
+                assert_eq!(skipped, 2, "two older calls must be dropped at capacity 1");
+            }
+            other => panic!("expected Lagged error at capacity 1, got {other:?}"),
+        }
     }
 }

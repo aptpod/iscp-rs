@@ -51,13 +51,7 @@ impl SharedTokenSource {
             while let Some(command) = rx_command.recv().await {
                 let Command(tx) = command;
                 let result = token_source.token().await;
-                let is_err = result.is_err();
-                if tx.send(result).is_err() {
-                    break;
-                }
-                if is_err {
-                    break;
-                }
+                let _ = tx.send(result);
             }
         });
 
@@ -127,5 +121,73 @@ impl TokenSourceError {
         Self {
             inner: Box::new(TokenSourceErrorMessage(msg.to_string())),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    /// Fails the first `fail_first` calls, then returns a token tagged with the call count.
+    struct FlakyTokenSource {
+        calls: Arc<AtomicUsize>,
+        fail_first: usize,
+    }
+
+    impl TokenSource for FlakyTokenSource {
+        async fn token(&mut self) -> Result<AccessToken, TokenSourceError> {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            if n < self.fail_first {
+                Err(TokenSourceError::from_msg("temporary failure"))
+            } else {
+                Ok(AccessToken::new(format!("token-{n}")))
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn token_error_does_not_kill_shared_task() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let shared = SharedTokenSource::new(FlakyTokenSource {
+            calls: calls.clone(),
+            fail_first: 1,
+        });
+
+        let first = shared.token().await;
+        assert!(first.is_err(), "first token() should propagate the error");
+
+        let second = shared.token().await;
+        let token = second.expect("second token() should succeed after a transient error");
+        assert_eq!(token, AccessToken::new("token-1"));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn send_failure_does_not_kill_shared_task() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let shared = SharedTokenSource::new(FlakyTokenSource {
+            calls: calls.clone(),
+            fail_first: 0,
+        });
+
+        // Drop the receiver before the task replies, forcing its oneshot send to fail.
+        let (tx, rx) = oneshot::channel();
+        shared
+            .tx_command
+            .send(Command(tx))
+            .await
+            .expect("command channel should be open");
+        drop(rx);
+
+        let token = shared
+            .token()
+            .await
+            .expect("token() should succeed even after a oneshot send failure");
+        assert!(calls.load(Ordering::SeqCst) >= 1);
+        assert!(token.0.starts_with("token-"));
     }
 }

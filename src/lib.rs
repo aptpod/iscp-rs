@@ -211,4 +211,4 @@ pub use crate::iscp::*;
 pub use crate::token_source::*;
 
 /// iSCPプロトコルバージョン
-pub const ISCP_VERSION: &str = "2.0.0";
+pub const ISCP_VERSION: &str = "3.0.0";

@@ -17,6 +17,11 @@ const PROTO_SRC_DIR: &str = "iscp-proto/proto";
 
 #[cfg(feature = "gen")]
 fn gen_proto() -> Result<()> {
+    // docs.rs uses a read-only source filesystem; pre-generated files are already committed.
+    if std::env::var("DOCS_RS").is_ok() {
+        return Ok(());
+    }
+
     const PROTO_SRC_FILES: &str = "iscp-proto/proto/**/*.proto";
     const AUTOGEN_DIR: &str = "src/message/proto";
 

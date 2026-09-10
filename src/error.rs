@@ -86,6 +86,13 @@ impl Error {
         )
     }
 
+    /// Whether the resume path should retry on this error. The deadline is owned
+    /// by the surrounding `timeout_with_ct(ct, expiry_interval, ..)`, so a transient
+    /// `Timeout` and an internal channel closure (`Unexpected`) are also retryable.
+    pub(crate) fn can_retry_resume(&self) -> bool {
+        self.can_retry() || matches!(self, Error::Timeout(..) | Error::Unexpected(..))
+    }
+
     pub(crate) fn result_code(&self) -> Option<crate::message::ResultCode> {
         match self {
             Error::FailedMessage { result_code, .. } => Some(*result_code),
@@ -103,5 +110,32 @@ impl Error {
 
     pub(crate) fn invalid_value<T: Into<Cow<'static, str>>>(msg: T) -> Self {
         Self::InvalidValue(msg.into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn can_retry_resume_includes_timeout_and_unexpected() {
+        assert!(Error::timeout("resume").can_retry_resume());
+        assert!(Error::unexpected("internal channel closed").can_retry_resume());
+        assert!(Error::ConnectionClosed.can_retry_resume());
+        assert!(Error::CancelledByClose.can_retry_resume());
+    }
+
+    #[test]
+    fn can_retry_resume_excludes_non_retryable() {
+        assert!(!Error::StreamClosed.can_retry_resume());
+        assert!(!Error::Reordering(uuid::Uuid::nil()).can_retry_resume());
+    }
+
+    #[test]
+    fn can_retry_unchanged_for_timeout() {
+        // can_retry() keeps Timeout/Unexpected non-retryable for the unbounded
+        // e2e retry loops; only the resume path widens the set.
+        assert!(!Error::timeout("x").can_retry());
+        assert!(!Error::unexpected("x").can_retry());
     }
 }

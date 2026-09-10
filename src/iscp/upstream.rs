@@ -95,6 +95,7 @@ pub struct UpstreamInner {
     tx_result: AtomicCell<Option<oneshot::Sender<Result<(), Error>>>>,
     close_opts: AtomicCell<Option<UpstreamCloseOptions>>,
     state: State,
+    resume_token: AtomicCell<String>,
     ct: CancellationToken,
 }
 
@@ -157,6 +158,7 @@ impl Upstream {
             is_connected: AtomicCell::new(true),
             tx_result: AtomicCell::new(None),
             close_opts: AtomicCell::default(),
+            resume_token: AtomicCell::new(response.resume_token),
             ct: ct.clone(),
         });
 
@@ -530,6 +532,7 @@ impl<'a> UpstreamFlusher<'a> {
                 crate::message::DataPointGroup {
                     data_id_or_alias: Some(data_id_or_alias),
                     data_points,
+                    ..Default::default()
                 }
             })
             .collect();
@@ -685,26 +688,30 @@ async fn get_conn_and_resume(
     Error,
 > {
     let mut resume_retry_waiter = ReconnectWaiter::new();
+    let mut resume_token = String::new();
+
     let result = timeout_with_ct(&inner.ct, inner.config.expiry_interval, async {
         loop {
             if wire_conn.is_connected() {
                 if need_resume.load() {
+                    if resume_token.is_empty() {
+                        resume_token = inner.resume_token.take();
+                    }
                     if inner.config.expiry_interval.is_zero() {
                         break None;
                     }
-                    match request_resume(&wire_conn, inner.stream_id).await {
-                        Ok(stream_id_alias) => {
+                    match request_resume(&wire_conn, inner.stream_id, resume_token.clone()).await {
+                        Ok((stream_id_alias, resume_token)) => {
                             inner.stream_id_alias.store(stream_id_alias);
+                            inner.resume_token.store(resume_token);
                             log::info!("resume success upstream {}", inner.stream_id);
                             need_resume.store(false);
                         }
                         Err(e) => {
-                            let result_code = e.result_code();
-                            if result_code == Some(crate::message::ResultCode::StreamNotFound) {
-                                log::warn!("cancel resume by stream not found: {e}");
+                            if e.result_code().is_some() {
+                                log::warn!("cancel resume by: {e}");
                                 break None;
-                            }
-                            if e.can_retry() || result_code.is_some() {
+                            } else if e.can_retry_resume() {
                                 log::warn!("cannot resume and retry: {e}");
                                 resume_retry_waiter.wait().await;
                             } else {
@@ -732,14 +739,19 @@ async fn get_conn_and_resume(
     result.map(|result| result.map(|result| (result, wire_conn)))
 }
 
-async fn request_resume(wire_conn: &WireConn, stream_id: Uuid) -> Result<u32, Error> {
+async fn request_resume(
+    wire_conn: &WireConn,
+    stream_id: Uuid,
+    resume_token: String,
+) -> Result<(u32, String), Error> {
     let request = crate::message::UpstreamResumeRequest {
         stream_id: stream_id.as_bytes().to_vec().into(),
+        resume_token,
         ..Default::default()
     };
 
     let response = wire_conn.request_message_need_response(request).await?;
-    Ok(response.assigned_stream_id_alias)
+    Ok((response.assigned_stream_id_alias, response.resume_token))
 }
 
 impl std::fmt::Debug for Upstream {

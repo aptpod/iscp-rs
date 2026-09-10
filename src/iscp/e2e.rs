@@ -163,15 +163,13 @@ impl Conn {
         let ack = rx_ack.await.map_err(|_| Error::ConnectionClosed)?;
         debug_assert_eq!(ack.call_id, call_id);
 
-        let call = loop {
-            let Ok(downstream_call) = rx_downstream_call.recv().await else {
-                return Err(Error::ConnectionClosed);
-            };
-
-            if downstream_call.request_call_id == call_id {
-                break downstream_call;
-            }
-        };
+        // Bound the wait so a lost reply cannot hang forever.
+        let call = wait_matching_reply(
+            &mut rx_downstream_call,
+            &call_id,
+            self.inner.e2e_call_reply_timeout,
+        )
+        .await?;
 
         Ok(DownstreamReplyCall {
             request_call_id: call.request_call_id,
@@ -228,4 +226,103 @@ impl Conn {
 
 pub(super) fn new_call_id() -> String {
     uuid::Uuid::new_v4().hyphenated().to_string()
+}
+
+/// Wait for the reply call matching `call_id`, bounded by `reply_timeout`.
+/// Returns [`Error::Timeout`] on deadline, [`Error::ConnectionClosed`] if the
+/// receiver closes.
+async fn wait_matching_reply(
+    rx_downstream_call: &mut crate::wire::DownstreamCallReceiver,
+    call_id: &str,
+    reply_timeout: std::time::Duration,
+) -> Result<crate::message::DownstreamCall, Error> {
+    let wait_reply = async {
+        loop {
+            let Ok(downstream_call) = rx_downstream_call.recv().await else {
+                return Err(Error::ConnectionClosed);
+            };
+
+            if downstream_call.request_call_id == call_id {
+                return Ok(downstream_call);
+            }
+        }
+    };
+    match tokio::time::timeout(reply_timeout, wait_reply).await {
+        Ok(result) => result,
+        Err(_) => Err(Error::timeout("wait reply call")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::message::DownstreamCall;
+    use std::time::Duration;
+    use tokio::sync::broadcast;
+
+    fn make_receiver(
+        capacity: usize,
+    ) -> (
+        broadcast::Sender<DownstreamCall>,
+        crate::wire::DownstreamCallReceiver,
+    ) {
+        let (tx, rx) = broadcast::channel(capacity);
+        (tx, crate::wire::DownstreamCallReceiver::new(rx))
+    }
+
+    // A missing reply must time out, not hang. The 10s outer guard only fires if
+    // the wait regresses to unbounded.
+    #[tokio::test]
+    async fn test_wait_matching_reply_times_out_when_reply_missing() {
+        let (_tx, mut rx) = make_receiver(1024);
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            wait_matching_reply(&mut rx, "missing-call-id", Duration::from_millis(50)),
+        )
+        .await
+        .expect("wait_matching_reply must return, not hang");
+
+        assert!(
+            matches!(result, Err(Error::Timeout(_))),
+            "expected Error::Timeout, got {result:?}"
+        );
+    }
+
+    // A non-matching reply is skipped; the matching one is returned within the deadline.
+    #[tokio::test]
+    async fn test_wait_matching_reply_returns_matching_reply() {
+        let (tx, mut rx) = make_receiver(1024);
+
+        tx.send(DownstreamCall {
+            request_call_id: "other".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        tx.send(DownstreamCall {
+            request_call_id: "wanted".into(),
+            payload: b"ok".to_vec().into(),
+            ..Default::default()
+        })
+        .unwrap();
+
+        let call = wait_matching_reply(&mut rx, "wanted", Duration::from_secs(60))
+            .await
+            .expect("matching reply must be returned");
+        assert_eq!(call.request_call_id, "wanted");
+        assert_eq!(&call.payload[..], b"ok");
+    }
+
+    // A closed channel surfaces `Error::ConnectionClosed` (retryable), not a hang.
+    #[tokio::test]
+    async fn test_wait_matching_reply_connection_closed() {
+        let (tx, mut rx) = make_receiver(1024);
+        std::mem::drop(tx);
+
+        let result = wait_matching_reply(&mut rx, "any", Duration::from_secs(60)).await;
+        assert!(
+            matches!(result, Err(Error::ConnectionClosed)),
+            "expected Error::ConnectionClosed, got {result:?}"
+        );
+    }
 }

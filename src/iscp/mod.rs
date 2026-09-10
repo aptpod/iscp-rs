@@ -52,6 +52,7 @@ pub struct ConnBuilder<C> {
     ping_interval: Duration,
     ping_timeout: Duration,
     response_message_timeout: Duration,
+    e2e_call_reply_timeout: Duration,
     token_source: Option<SharedTokenSource>,
     channel_size: usize,
 }
@@ -68,6 +69,7 @@ impl<C: Connector> ConnBuilder<C> {
             ping_interval: Duration::from_secs(10),
             ping_timeout: Duration::from_secs(1),
             response_message_timeout: Duration::from_secs(3),
+            e2e_call_reply_timeout: Duration::from_secs(60),
             token_source: None,
             channel_size: 1024,
         }
@@ -130,6 +132,12 @@ impl<C: Connector> ConnBuilder<C> {
     /// 返信タイムアウトを設定
     pub fn response_message_timeout(mut self, response_message_timeout: Duration) -> Self {
         self.response_message_timeout = response_message_timeout;
+        self
+    }
+
+    /// E2Eコールのリプライコール待ちタイムアウトを設定
+    pub fn e2e_call_reply_timeout(mut self, e2e_call_reply_timeout: Duration) -> Self {
+        self.e2e_call_reply_timeout = e2e_call_reply_timeout;
         self
     }
 
@@ -198,7 +206,9 @@ impl<C: Connector> ConnBuilder<C> {
             extension_fields,
             ..Default::default()
         };
-        let _response = conn.request_message_need_response(connect_request).await?;
+        let response = conn.request_message_need_response(connect_request).await?;
+
+        log::info!("iscp protocol version is {}", response.protocol_version);
 
         log::info!("successfully received connect response message");
 
@@ -360,6 +370,7 @@ struct ConnInner {
     tx_state: watch::Sender<ConnectionState>,
     rx_state: watch::Receiver<ConnectionState>,
     channel_size: usize,
+    e2e_call_reply_timeout: Duration,
 }
 
 impl ConnInner {
@@ -369,6 +380,7 @@ impl ConnInner {
         let (tx_wire_conn, rx_wire_conn) = watch::channel(wire_conn.clone());
         let (tx_state, rx_state) = watch::channel(ConnectionState::Connected);
         let channel_size = builder.channel_size;
+        let e2e_call_reply_timeout = builder.e2e_call_reply_timeout;
 
         let ct_clone = ct.clone();
         let tx_state_clone = tx_state.clone();
@@ -389,6 +401,7 @@ impl ConnInner {
             tx_state,
             rx_state,
             channel_size,
+            e2e_call_reply_timeout,
         }
     }
 

@@ -301,7 +301,7 @@ impl DictionaryBuffer {
 
 #[cfg(test)]
 mod test {
-    use rand::{Rng, distributions::Alphanumeric};
+    use rand::{RngExt, distr::Alphanumeric};
 
     use super::*;
 
@@ -345,7 +345,7 @@ mod test {
 
     #[test]
     fn compress_extract() {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
 
         struct Case {
             compressor: Compressor,
@@ -435,7 +435,7 @@ mod test {
             fn test(&mut self) {
                 let msgs: Vec<Vec<u8>> = (0..self.n_msg)
                     .map(|_| {
-                        let mut rng = rand::thread_rng();
+                        let mut rng = rand::rng();
                         (0..self.msg_size)
                             .map(|_| rng.sample(Alphanumeric) as u8)
                             .collect()

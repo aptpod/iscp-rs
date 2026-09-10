@@ -34,11 +34,11 @@ pub enum CompressionType {
 pub struct NegotiationParams {
     #[serde(rename = "enc")]
     pub encoding_name: EncodingName,
-    #[serde(rename = "comp")]
+    #[serde(rename = "comp", skip_serializing_if = "Option::is_none")]
     pub compression_type: Option<CompressionType>,
-    #[serde(rename = "clevel")]
+    #[serde(rename = "clevel", skip_serializing_if = "Option::is_none")]
     pub compression_level: Option<i8>,
-    #[serde(rename = "cwinbits")]
+    #[serde(rename = "cwinbits", skip_serializing_if = "Option::is_none")]
     pub compression_window_bits: Option<u8>,
 }
 

@@ -4,7 +4,6 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use rand::Rng;
 use uuid::Uuid;
 
 use crate::{Error, QoS};
@@ -82,7 +81,7 @@ impl ReconnectWaiter {
         if self.current > self.max {
             self.current = self.max;
         }
-        let ms = self.current * rand::thread_rng().gen_range(0.5..1.5);
+        let ms = self.current * rand::random_range(0.5..1.5);
         let duration = Duration::from_millis(ms as u64);
         tokio::time::sleep(duration).await
     }

@@ -92,6 +92,7 @@ pub struct DownstreamInner {
     stream_id: Uuid,
     stream_id_alias: AtomicCell<u32>,
     state: State,
+    resume_token: AtomicCell<String>,
     tx_result: AtomicCell<Option<oneshot::Sender<Result<(), Error>>>>,
     server_time: SystemTime,
     close_cause: AtomicCell<Option<Error>>,
@@ -122,6 +123,7 @@ impl Downstream {
             stream_id,
             stream_id_alias: AtomicCell::new(stream_id_alias),
             state: State::new(data_id_aliases),
+            resume_token: AtomicCell::new(response.resume_token),
             tx_result: AtomicCell::new(None),
             server_time,
             close_cause: AtomicCell::new(None),
@@ -235,6 +237,7 @@ async fn downstream_loop(
 
     loop {
         let mut resume_retry_waiter = ReconnectWaiter::new();
+        let mut resume_token = String::new();
         // Resume loop. timeout by expiry_interval
         let result = timeout_with_ct(ct, inner.config.expiry_interval, async {
             loop {
@@ -243,19 +246,23 @@ async fn downstream_loop(
                         if inner.config.expiry_interval.is_zero() {
                             break None;
                         }
-                        match request_resume(&wire_conn, inner.stream_id).await {
-                            Ok(stream_id_alias) => {
+                        if resume_token.is_empty() {
+                            resume_token = inner.resume_token.take();
+                        }
+                        match request_resume(&wire_conn, inner.stream_id, resume_token.clone())
+                            .await
+                        {
+                            Ok((stream_id_alias, resume_token)) => {
                                 inner.stream_id_alias.store(stream_id_alias);
+                                inner.resume_token.store(resume_token);
                                 log::info!("resume success downstream {}", inner.stream_id);
                                 need_resume = false;
                             }
                             Err(e) => {
-                                let result_code = e.result_code();
-                                if result_code == Some(crate::message::ResultCode::StreamNotFound) {
-                                    log::warn!("cancel resume by stream not found: {e}");
+                                if e.result_code().is_some() {
+                                    log::warn!("cancel resume by: {e}");
                                     break None;
-                                }
-                                if e.can_retry() || result_code.is_some() {
+                                } else if e.can_retry_resume() {
                                     log::warn!("cannot resume and retry: {e}");
                                     resume_retry_waiter.wait().await;
                                 } else {
@@ -498,16 +505,21 @@ async fn request_open(
     Ok((response, desired_stream_id_alias, data_id_aliases))
 }
 
-async fn request_resume(wire_conn: &WireConn, stream_id: Uuid) -> Result<u32, Error> {
+async fn request_resume(
+    wire_conn: &WireConn,
+    stream_id: Uuid,
+    resume_token: String,
+) -> Result<(u32, String), Error> {
     let desired_stream_id_alias = wire_conn.downstream_stream_id_alias()?;
     let request = crate::message::DownstreamResumeRequest {
         desired_stream_id_alias,
         stream_id: stream_id.as_bytes().to_vec().into(),
+        resume_token,
         ..Default::default()
     };
 
-    let _response = wire_conn.request_message_need_response(request).await?;
-    Ok(desired_stream_id_alias)
+    let response = wire_conn.request_message_need_response(request).await?;
+    Ok((desired_stream_id_alias, response.resume_token))
 }
 
 fn convert_downstream_chunk(

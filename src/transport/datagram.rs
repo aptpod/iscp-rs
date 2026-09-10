@@ -81,7 +81,8 @@ impl FrameBuf {
 
         let now = Instant::now();
         if now - self.checked_at > self.expire {
-            self.frames.retain(|_, (t, _, _)| now - *t > self.expire);
+            self.frames.retain(|_, (t, _, _)| now - *t <= self.expire);
+            self.checked_at = now;
         }
 
         let sequence_number = BigEndian::read_u32(&frame[0..4]);
@@ -183,6 +184,46 @@ mod test {
                     assert_ne!(i, frames.len() - 1);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn datagram_expire() {
+        let data = vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06];
+
+        let mut splitter = Splitter::new(12);
+        let mut frames = VecDeque::new();
+        splitter.split(&data, &mut frames).unwrap();
+
+        let frame1 = frames.pop_front().unwrap();
+        let frame2 = frames.pop_front().unwrap();
+
+        // No expire
+        {
+            let mut frame_buf = FrameBuf::new();
+            frame_buf.expire = Duration::from_millis(200);
+
+            assert!(frame_buf.push(frame1.clone()).is_none());
+
+            std::thread::sleep(Duration::from_millis(100));
+
+            let result = frame_buf.push(frame2.clone());
+            assert_eq!(result, Some(Bytes::from(data.clone())));
+            assert!(frame_buf.frames.is_empty());
+        }
+
+        // Expire
+        {
+            let mut frame_buf = FrameBuf::new();
+            frame_buf.expire = Duration::from_millis(100);
+
+            assert!(frame_buf.push(frame1.clone()).is_none());
+
+            std::thread::sleep(Duration::from_millis(200));
+
+            let result = frame_buf.push(frame2.clone());
+            assert!(result.is_none());
+            assert!(frame_buf.frames.len() == 1);
         }
     }
 }

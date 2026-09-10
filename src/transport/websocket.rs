@@ -1,7 +1,7 @@
 //! WebSocketトランスポートの実装
 
 use bytes::BytesMut;
-use reqwest_websocket::{Message, RequestBuilderExt};
+use reqwest_websocket::{Message, Upgrade};
 use tokio::sync::mpsc;
 use url::Url;
 
@@ -73,7 +73,7 @@ impl Connector for WebSocketConnector {
             builder
         };
 
-        let client = builder.build().map_err(TransportError::new)?;
+        let client = builder.http1_only().build().map_err(TransportError::new)?;
         let response = client
             .get(url.clone())
             .upgrade()
@@ -161,7 +161,7 @@ impl TransportReader for WebSocketReader {
                     continue;
                 }
                 Message::Binary(bin) => {
-                    buf.extend_from_slice(bin.as_slice());
+                    buf.extend_from_slice(bin.as_ref());
                     return Ok(());
                 }
                 _ => continue,
@@ -177,7 +177,7 @@ impl TransportReader for WebSocketReader {
 
 impl TransportWriter for WebSocketWriter {
     async fn write(&mut self, data: &[u8]) -> Result<(), TransportError> {
-        let msg = Message::Binary(data.to_vec());
+        let msg = Message::Binary(bytes::Bytes::copy_from_slice(data));
         self.tx_write_message
             .send(msg)
             .await

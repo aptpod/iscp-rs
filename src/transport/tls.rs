@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
 
 use super::TransportError;
@@ -70,8 +71,7 @@ impl Certificate {
     fn into_rustls_cert(self) -> Result<Vec<CertificateDer<'static>>, TransportError> {
         let res = match self {
             Certificate::Pem(pem) => {
-                let mut slice = pem.as_slice();
-                let certs: Vec<_> = rustls_pemfile::certs(&mut slice)
+                let certs: Vec<_> = CertificateDer::pem_slice_iter(&pem)
                     .filter_map(|result| match result {
                         Ok(cert) => Some(cert),
                         Err(e) => {
@@ -92,35 +92,8 @@ impl Certificate {
 
     fn into_rustls_key(self) -> Result<PrivateKeyDer<'static>, TransportError> {
         let res = match self {
-            Certificate::Pem(pem) => {
-                let mut slice = pem.as_slice();
-                let items: Vec<_> = rustls_pemfile::read_all(&mut slice)
-                    .filter_map(|result| match result {
-                        Ok(a) => Some(a),
-                        Err(e) => {
-                            log::warn!("error in reading pem: {e}");
-                            None
-                        }
-                    })
-                    .collect();
-                if items.len() > 1 {
-                    log::warn!("multiple keys found, use the first item");
-                }
-                match items.first() {
-                    Some(rustls_pemfile::Item::Pkcs1Key(der)) => {
-                        PrivateKeyDer::Pkcs1(der.clone_key())
-                    }
-                    Some(rustls_pemfile::Item::Pkcs8Key(der)) => {
-                        PrivateKeyDer::Pkcs8(der.clone_key())
-                    }
-                    Some(rustls_pemfile::Item::Sec1Key(der)) => {
-                        PrivateKeyDer::Sec1(der.clone_key())
-                    }
-                    _ => {
-                        return Err(TransportError::from_msg("no key found"));
-                    }
-                }
-            }
+            Certificate::Pem(pem) => PrivateKeyDer::from_pem_slice(&pem)
+                .map_err(|_| TransportError::from_msg("no key found"))?,
             Certificate::Der(der) => {
                 PrivateKeyDer::try_from(der).map_err(TransportError::from_msg)?
             }
@@ -139,9 +112,13 @@ pub fn rustls_config_client(
         None
     };
 
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+
     let client_config = if skip_server_verification {
         // Skip server verification
-        let builder = rustls::ClientConfig::builder()
+        let builder = rustls::ClientConfig::builder_with_provider(Arc::clone(&provider))
+            .with_safe_default_protocol_versions()
+            .map_err(TransportError::new)?
             .dangerous()
             .with_custom_certificate_verifier(SkipServerVerification::new());
         if let Some((client_auth_cert, client_auth_key)) = client_auth_cert_and_key {
@@ -158,7 +135,9 @@ pub fn rustls_config_client(
         for cert in certs.into_iter() {
             roots.add(cert).map_err(TransportError::new)?;
         }
-        rustls::ClientConfig::builder()
+        rustls::ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .map_err(TransportError::new)?
             .with_root_certificates(roots)
             .with_client_auth_cert(client_auth_cert, client_auth_key)
             .map_err(TransportError::new)?

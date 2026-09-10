@@ -74,7 +74,9 @@ impl Conn {
 
         let (tx_write_message, rx_write_message) = mpsc::channel(channel_size);
         let (tx_pong, rx_pong) = mpsc::channel(channel_size);
-        let (tx_downstream_call, rx_downstream_call) = broadcast::channel(1);
+        // `channel_size` (default 1024), not 1: at capacity 1 a slow receiver loses
+        // every DownstreamCall but the newest, dropping reply calls.
+        let (tx_downstream_call, rx_downstream_call) = broadcast::channel(channel_size);
         let (tx_read_loop_command, rx_read_loop_command) = mpsc::unbounded_channel();
         let (waiter, wg) = Waiter::new();
         let (waiter_rw, wg_rw) = Waiter::new();

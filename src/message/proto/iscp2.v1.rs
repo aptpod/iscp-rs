@@ -12,6 +12,8 @@ pub struct StreamChunk {
 pub struct DataPointGroup {
     #[prost(message, repeated, tag = "3")]
     pub data_points: ::prost::alloc::vec::Vec<DataPoint>,
+    #[prost(uint32, repeated, tag = "4")]
+    pub data_filter_ids: ::prost::alloc::vec::Vec<u32>,
     #[prost(oneof = "data_point_group::DataIdOrAlias", tags = "1, 2")]
     pub data_id_or_alias: ::core::option::Option<data_point_group::DataIdOrAlias>,
 }
@@ -54,6 +56,20 @@ pub struct DownstreamFilter {
     pub source_node_id: ::prost::alloc::string::String,
     #[prost(message, repeated, tag = "2")]
     pub data_filters: ::prost::alloc::vec::Vec<DataFilter>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct DownstreamFilterReference {
+    #[prost(uint32, tag = "1")]
+    pub downstream_filter_index: u32,
+    #[prost(uint32, tag = "2")]
+    pub data_filter_index: u32,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DownstreamFilterReferences {
+    #[prost(message, repeated, tag = "1")]
+    pub references: ::prost::alloc::vec::Vec<DownstreamFilterReference>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(PartialOrd, Ord, Eq, Hash)]
@@ -130,6 +146,10 @@ pub enum ResultCode {
     TooShortPingInterval = 88,
     TooShortPingTimeout = 89,
     RateLimitReached = 90,
+    TooLargeFeedId = 91,
+    TooManyTargetNodes = 92,
+    FeedNotFound = 93,
+    InvalidResumeToken = 94,
     NodeIdMismatch = 128,
     SessionNotFound = 129,
     SessionAlreadyClosed = 130,
@@ -173,6 +193,10 @@ impl ResultCode {
             Self::TooShortPingInterval => "TOO_SHORT_PING_INTERVAL",
             Self::TooShortPingTimeout => "TOO_SHORT_PING_TIMEOUT",
             Self::RateLimitReached => "RATE_LIMIT_REACHED",
+            Self::TooLargeFeedId => "TOO_LARGE_FEED_ID",
+            Self::TooManyTargetNodes => "TOO_MANY_TARGET_NODES",
+            Self::FeedNotFound => "FEED_NOT_FOUND",
+            Self::InvalidResumeToken => "INVALID_RESUME_TOKEN",
             Self::NodeIdMismatch => "NODE_ID_MISMATCH",
             Self::SessionNotFound => "SESSION_NOT_FOUND",
             Self::SessionAlreadyClosed => "SESSION_ALREADY_CLOSED",
@@ -213,6 +237,10 @@ impl ResultCode {
             "TOO_SHORT_PING_INTERVAL" => Some(Self::TooShortPingInterval),
             "TOO_SHORT_PING_TIMEOUT" => Some(Self::TooShortPingTimeout),
             "RATE_LIMIT_REACHED" => Some(Self::RateLimitReached),
+            "TOO_LARGE_FEED_ID" => Some(Self::TooLargeFeedId),
+            "TOO_MANY_TARGET_NODES" => Some(Self::TooManyTargetNodes),
+            "FEED_NOT_FOUND" => Some(Self::FeedNotFound),
+            "INVALID_RESUME_TOKEN" => Some(Self::InvalidResumeToken),
             "NODE_ID_MISMATCH" => Some(Self::NodeIdMismatch),
             "SESSION_NOT_FOUND" => Some(Self::SessionNotFound),
             "SESSION_ALREADY_CLOSED" => Some(Self::SessionAlreadyClosed),
@@ -238,6 +266,15 @@ pub struct ConnectRequest {
     pub extension_fields: ::core::option::Option<
         extensions::ConnectRequestExtensionFields,
     >,
+    /// 再接続時に既存接続を指定
+    #[prost(string, tag = "7")]
+    pub connection_id: ::prost::alloc::string::String,
+    /// マルチコネクションで指定する。
+    #[prost(string, tag = "8")]
+    pub connection_group_id: ::prost::alloc::string::String,
+    /// コネクションの有効期限（秒）
+    #[prost(uint32, tag = "9")]
+    pub expiry_interval: u32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -254,6 +291,10 @@ pub struct ConnectResponse {
     pub extension_fields: ::core::option::Option<
         extensions::ConnectResponseExtensionFields,
     >,
+    #[prost(string, tag = "6")]
+    pub connection_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "8")]
+    pub connection_group_id: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -390,6 +431,8 @@ pub struct DownstreamOpenResponse {
     pub extension_fields: ::core::option::Option<
         extensions::DownstreamOpenResponseExtensionFields,
     >,
+    #[prost(string, tag = "7")]
+    pub resume_token: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -404,6 +447,8 @@ pub struct DownstreamResumeRequest {
     pub extension_fields: ::core::option::Option<
         extensions::DownstreamResumeRequestExtensionFields,
     >,
+    #[prost(string, tag = "5")]
+    pub resume_token: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -418,6 +463,8 @@ pub struct DownstreamResumeResponse {
     pub extension_fields: ::core::option::Option<
         extensions::DownstreamResumeResponseExtensionFields,
     >,
+    #[prost(string, tag = "5")]
+    pub resume_token: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -455,6 +502,10 @@ pub struct DownstreamChunk {
     #[prost(message, optional, tag = "5")]
     pub extension_fields: ::core::option::Option<
         extensions::DownstreamChunkExtensionFields,
+    >,
+    #[prost(message, repeated, tag = "6")]
+    pub downstream_filter_references: ::prost::alloc::vec::Vec<
+        DownstreamFilterReferences,
     >,
     #[prost(oneof = "downstream_chunk::UpstreamOrAlias", tags = "2, 3")]
     pub upstream_or_alias: ::core::option::Option<downstream_chunk::UpstreamOrAlias>,
@@ -702,6 +753,8 @@ pub struct UpstreamOpenResponse {
     pub extension_fields: ::core::option::Option<
         extensions::UpstreamOpenResponseExtensionFields,
     >,
+    #[prost(string, tag = "9")]
+    pub resume_token: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -714,6 +767,8 @@ pub struct UpstreamResumeRequest {
     pub extension_fields: ::core::option::Option<
         extensions::UpstreamResumeRequestExtensionFields,
     >,
+    #[prost(string, tag = "4")]
+    pub resume_token: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -730,6 +785,8 @@ pub struct UpstreamResumeResponse {
     pub extension_fields: ::core::option::Option<
         extensions::UpstreamResumeResponseExtensionFields,
     >,
+    #[prost(string, tag = "6")]
+    pub resume_token: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
